@@ -144,6 +144,17 @@ func (s *Server) DispatchTask(ctx context.Context, req *pb.DispatchTaskRequest) 
 	}
 	dctx.Environ.NodeID = p2p.NodeID(s.info.ID)
 	dctx.Environ.Addr = s.info.Addr
+	masterMeta := &lib.MasterMetaExt{
+		// GetWorkerId here returns id of current unit
+		ID:     req.GetWorkerId(),
+		Tp:     lib.WorkerType(req.GetTaskTypeId()),
+		Config: req.GetTaskConfig(),
+	}
+	metaBytes, err := masterMeta.Marshal()
+	if err != nil {
+		return nil, err
+	}
+	dctx.Environ.MasterMetaExt = metaBytes
 
 	newWorker, err := registry.GlobalWorkerRegistry().CreateWorker(
 		dctx,
@@ -400,7 +411,7 @@ func (s *Server) selfRegister(ctx context.Context) (err error) {
 	s.info = &model.NodeInfo{
 		Type: model.NodeTypeExecutor,
 		ID:   model.ExecutorID(resp.ExecutorId),
-		Addr: s.cfg.WorkerAddr,
+		Addr: s.cfg.AdvertiseAddr,
 	}
 	log.L().Logger.Info("register successful", zap.Any("info", s.info))
 	return nil

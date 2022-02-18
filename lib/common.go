@@ -35,10 +35,14 @@ const (
 
 const (
 	JobManager = WorkerType(iota + 1)
+	// job master
 	CvsJobMaster
+	FakeJobMaster
 	DmJobMaster
 	CdcJobMaster
+	// task
 	CvsTask
+	FakeTask
 	DmTask
 	CdcTask
 )
@@ -145,7 +149,6 @@ type WorkloadReportMessage struct {
 }
 
 type (
-	MasterMetaExt    = interface{}
 	MasterMetaKVData struct {
 		ID          MasterID   `json:"id"`
 		Addr        string     `json:"addr"`
@@ -154,9 +157,16 @@ type (
 		Initialized bool       `json:"initialized"`
 
 		// Ext holds business-specific data
-		Ext MasterMetaExt `json:"ext"`
+		MasterMetaExt *MasterMetaExt `json:"meta-ext"`
 	}
 )
+
+type WorkerMetaKVData struct {
+	MasterID   Master           `json:"id"`
+	NodeID     p2p.NodeID       `json:"node-id"`
+	StatusCode WorkerStatusCode `json:"status-code"`
+	Message    string           `json:"message"`
+}
 
 type MasterFailoverReasonCode int32
 
