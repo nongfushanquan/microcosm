@@ -257,6 +257,8 @@ func (s *Server) Run(ctx context.Context) error {
 		return s.startForTest(ctx)
 	}
 
+	registerMetrics()
+
 	wg, ctx := errgroup.WithContext(ctx)
 
 	s.sch = runtime.NewRuntime(nil)
@@ -317,6 +319,10 @@ func (s *Server) Run(ctx context.Context) error {
 		return s.bgUpdateServerMasterClients(ctx)
 	})
 
+	wg.Go(func() error {
+		return s.collectMetricLoop(ctx, defaultMetricInterval)
+	})
+
 	return wg.Wait()
 }
 
@@ -339,7 +345,7 @@ func (s *Server) startTCPService(ctx context.Context, wg *errgroup.Group) error 
 	})
 
 	wg.Go(func() error {
-		return debugHandler(s.tcpServer.HTTP1Listener())
+		return httpHandler(s.tcpServer.HTTP1Listener())
 	})
 	return nil
 }
@@ -535,6 +541,20 @@ func (s *Server) bgUpdateServerMasterClients(ctx context.Context) error {
 			return nil
 		case urls := <-s.cliUpdateCh:
 			s.cli.UpdateClients(ctx, urls)
+		}
+	}
+}
+
+func (s *Server) collectMetricLoop(ctx context.Context, tickInterval time.Duration) error {
+	metricRunningTask := executorTaskNumGauge.WithLabelValues("running")
+	ticker := time.NewTicker(tickInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			metricRunningTask.Set(float64(s.workerRtm.TaskCount()))
 		}
 	}
 }

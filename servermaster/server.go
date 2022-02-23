@@ -28,6 +28,8 @@ import (
 	"github.com/pingcap/tiflow/dm/pkg/etcdutil"
 	"github.com/pingcap/tiflow/dm/pkg/log"
 	p2pProtocol "github.com/pingcap/tiflow/proto/p2p"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.etcd.io/etcd/clientv3"
 	"go.etcd.io/etcd/clientv3/concurrency"
 	"go.etcd.io/etcd/embed"
@@ -63,8 +65,9 @@ type Server struct {
 	executorManager ExecutorManager
 	jobManager      JobManager
 	//
-	cfg  *Config
-	info *model.NodeInfo
+	cfg     *Config
+	info    *model.NodeInfo
+	metrics *serverMasterMetric
 
 	msgService      *p2p.MessageRPCService
 	p2pMsgRouter    p2p.MessageRouter
@@ -77,6 +80,31 @@ type Server struct {
 	mockGrpcServer mock.GrpcServer
 
 	testCtx *test.Context
+}
+
+type serverMasterMetric struct {
+	metricJobNum      map[pb.QueryJobResponse_JobStatus]prometheus.Gauge
+	metricExecutorNum map[model.ExecutorStatus]prometheus.Gauge
+}
+
+func newServerMasterMetric() *serverMasterMetric {
+	// Following are leader only metrics
+	metricJobNum := make(map[pb.QueryJobResponse_JobStatus]prometheus.Gauge)
+	for status, name := range pb.QueryJobResponse_JobStatus_name {
+		metric := serverJobNumGauge.WithLabelValues(name)
+		metricJobNum[pb.QueryJobResponse_JobStatus(status)] = metric
+	}
+
+	metricExecutorNum := make(map[model.ExecutorStatus]prometheus.Gauge)
+	for status, name := range model.ExecutorStatusNameMapping {
+		metric := serverExecutorNumGauge.WithLabelValues(name)
+		metricExecutorNum[status] = metric
+	}
+
+	return &serverMasterMetric{
+		metricJobNum:      metricJobNum,
+		metricExecutorNum: metricExecutorNum,
+	}
 }
 
 // NewServer creates a new master-server.
@@ -108,6 +136,7 @@ func NewServer(cfg *Config, ctx *test.Context) (*Server, error) {
 		leader:          atomic.Value{},
 		p2pMsgRouter:    p2pMsgRouter,
 		rpcLogRL:        rate.NewLimiter(rate.Every(time.Second*5), 3 /*burst*/),
+		metrics:         newServerMasterMetric(),
 	}
 	server.leaderServiceFn = server.runLeaderService
 	return server, nil
@@ -161,6 +190,23 @@ func (s *Server) SubmitJob(ctx context.Context, req *pb.SubmitJobRequest) (*pb.S
 		return &pb.SubmitJobResponse{Err: err}, nil
 	}
 	return s.jobManager.SubmitJob(ctx, req), nil
+}
+
+func (s *Server) QueryJob(ctx context.Context, req *pb.QueryJobRequest) (*pb.QueryJobResponse, error) {
+	var (
+		resp2 *pb.QueryJobResponse
+		err2  error
+	)
+	shouldRet := s.rpcForwardIfNeeded(ctx, req, &resp2, &err2)
+	if shouldRet {
+		return resp2, err2
+	}
+
+	err := s.apiPreCheck()
+	if err != nil {
+		return &pb.QueryJobResponse{Err: err}, nil
+	}
+	return s.jobManager.QueryJob(ctx, req), nil
 }
 
 func (s *Server) CancelJob(ctx context.Context, req *pb.CancelJobRequest) (*pb.CancelJobResponse, error) {
@@ -341,6 +387,8 @@ func (s *Server) Run(ctx context.Context) (err error) {
 		return s.startForTest(ctx)
 	}
 
+	registerMetrics()
+
 	err = s.startGrpcSrv(ctx)
 	if err != nil {
 		return
@@ -404,7 +452,8 @@ func (s *Server) startGrpcSrv(ctx context.Context) (err error) {
 	}
 
 	httpHandlers := map[string]http.Handler{
-		"/debug/": getDebugHandler(),
+		"/debug/":  getDebugHandler(),
+		"/metrics": promhttp.Handler(),
 	}
 
 	// generate grpcServer
@@ -516,6 +565,8 @@ func (s *Server) runLeaderService(ctx context.Context) (err error) {
 		s.resign()
 	}()
 
+	metricTicker := time.NewTicker(defaultMetricInterval)
+	defer metricTicker.Stop()
 	leaderTicker := time.NewTicker(time.Millisecond * 200)
 	defer leaderTicker.Stop()
 	for {
@@ -533,6 +584,8 @@ func (s *Server) runLeaderService(ctx context.Context) (err error) {
 			if err != nil {
 				return err
 			}
+		case <-leaderTicker.C:
+			s.collectLeaderMetric()
 		}
 	}
 }
@@ -662,5 +715,15 @@ func (s *Server) memberLoop(ctx context.Context) error {
 				log.L().Warn("update server master members failed", zap.Error(err))
 			}
 		}
+	}
+}
+
+func (s *Server) collectLeaderMetric() {
+	for status := range pb.QueryJobResponse_JobStatus_name {
+		pbStatus := pb.QueryJobResponse_JobStatus(status)
+		s.metrics.metricJobNum[pbStatus].Set(float64(s.jobManager.JobCount(pbStatus)))
+	}
+	for status := range model.ExecutorStatusNameMapping {
+		s.metrics.metricExecutorNum[status].Set(float64(s.executorManager.ExecutorCount(status)))
 	}
 }

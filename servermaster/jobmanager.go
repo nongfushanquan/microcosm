@@ -20,8 +20,10 @@ import (
 // JobManager defines manager of job master
 type JobManager interface {
 	lib.Master
+	JobStats
 
 	SubmitJob(ctx context.Context, req *pb.SubmitJobRequest) *pb.SubmitJobResponse
+	QueryJob(ctx context.Context, req *pb.QueryJobRequest) *pb.QueryJobResponse
 	CancelJob(ctx context.Context, req *pb.CancelJobRequest) *pb.CancelJobResponse
 	PauseJob(ctx context.Context, req *pb.PauseJobRequest) *pb.PauseJobResponse
 }
@@ -36,15 +38,19 @@ const defaultJobMasterCost = 1
 // - Tick checks `pendingJobs` periodically	and reschedules the jobs.
 type JobManagerImplV2 struct {
 	lib.BaseMaster
+	*JobFsm
 
 	messageHandlerManager p2p.MessageHandlerManager
 	messageSender         p2p.MessageSender
 	metaKVClient          metadata.MetaKV
 	executorClientManager client.ClientsManager
 	serverMasterClient    client.MasterClient
-	jobFsm                *JobFsm
 	uuidGen               uuid.Generator
 	masterMetaClient      *lib.MasterMetadataClient
+}
+
+func (jm *JobManagerImplV2) GetWorkerStatusExtTypeInfo() interface{} {
+	return struct{}{}
 }
 
 func (jm *JobManagerImplV2) PauseJob(ctx context.Context, req *pb.PauseJobRequest) *pb.PauseJobResponse {
@@ -53,6 +59,10 @@ func (jm *JobManagerImplV2) PauseJob(ctx context.Context, req *pb.PauseJobReques
 
 func (jm *JobManagerImplV2) CancelJob(ctx context.Context, req *pb.CancelJobRequest) *pb.CancelJobResponse {
 	panic("not implemented")
+}
+
+func (jm *JobManagerImplV2) QueryJob(ctx context.Context, req *pb.QueryJobRequest) *pb.QueryJobResponse {
+	return jm.JobFsm.QueryJob(req.JobId)
 }
 
 // SubmitJob processes "SubmitJobRequest".
@@ -66,7 +76,8 @@ func (jm *JobManagerImplV2) SubmitJob(ctx context.Context, req *pb.SubmitJobRequ
 	job := &lib.MasterMetaExt{
 		// TODO: we can use job name provided from user, but we must check the
 		// job name is unique before using it.
-		ID: jm.uuidGen.NewString(),
+		ID:     jm.uuidGen.NewString(),
+		Config: req.Config,
 	}
 	switch req.Tp {
 	case pb.JobType_CVSDemo:
@@ -100,7 +111,7 @@ func (jm *JobManagerImplV2) SubmitJob(ctx context.Context, req *pb.SubmitJobRequ
 		resp.Err = errors.ToPBError(err)
 		return resp
 	}
-	jm.jobFsm.JobDispatched(job)
+	jm.JobFsm.JobDispatched(job)
 
 	resp.JobIdStr = id
 	return resp
@@ -122,7 +133,7 @@ func NewJobManagerImplV2(
 		executorClientManager: clients,
 		serverMasterClient:    clients.MasterClient(),
 		metaKVClient:          metaKVClient,
-		jobFsm:                NewJobFsm(),
+		JobFsm:                NewJobFsm(),
 		uuidGen:               uuid.NewGenerator(),
 		masterMetaClient:      lib.NewMasterMetadataClient(id, metaKVClient),
 	}
@@ -150,7 +161,7 @@ func (jm *JobManagerImplV2) InitImpl(ctx context.Context) error {
 
 // Tick implements lib.MasterImpl.Tick
 func (jm *JobManagerImplV2) Tick(ctx context.Context) error {
-	return jm.jobFsm.IterPendingJobs(
+	return jm.JobFsm.IterPendingJobs(
 		func(job *lib.MasterMetaExt) (string, error) {
 			return jm.BaseMaster.CreateWorker(
 				job.Tp, job, defaultJobMasterCost)
@@ -164,7 +175,7 @@ func (jm *JobManagerImplV2) OnMasterRecovered(ctx context.Context) error {
 		return err
 	}
 	for _, job := range jobs {
-		jm.jobFsm.JobDispatched(job.MasterMetaExt)
+		jm.JobFsm.JobDispatched(job.MasterMetaExt)
 		if err := jm.BaseMaster.RegisterWorker(ctx, job.ID); err != nil {
 			return err
 		}
@@ -178,7 +189,7 @@ func (jm *JobManagerImplV2) OnMasterRecovered(ctx context.Context) error {
 func (jm *JobManagerImplV2) OnWorkerDispatched(worker lib.WorkerHandle, result error) error {
 	if result != nil {
 		log.L().Warn("dispatch worker met error", zap.Error(result))
-		return jm.jobFsm.JobDispatchFailed(worker)
+		return jm.JobFsm.JobDispatchFailed(worker)
 	}
 	return nil
 }
@@ -186,13 +197,13 @@ func (jm *JobManagerImplV2) OnWorkerDispatched(worker lib.WorkerHandle, result e
 // OnWorkerOnline implements lib.MasterImpl.OnWorkerOnline
 func (jm *JobManagerImplV2) OnWorkerOnline(worker lib.WorkerHandle) error {
 	log.L().Info("on worker online", zap.Any("id", worker.ID()))
-	return jm.jobFsm.JobOnline(worker)
+	return jm.JobFsm.JobOnline(worker)
 }
 
 // OnWorkerOffline implements lib.MasterImpl.OnWorkerOffline
 func (jm *JobManagerImplV2) OnWorkerOffline(worker lib.WorkerHandle, reason error) error {
 	log.L().Info("on worker offline", zap.Any("id", worker.ID()), zap.Any("reason", reason))
-	jm.jobFsm.JobOffline(worker)
+	jm.JobFsm.JobOffline(worker)
 	return nil
 }
 
