@@ -66,6 +66,16 @@ var defaultTimeoutConfig TimeoutConfig = TimeoutConfig{
 	workerHeartbeatInterval:          time.Second * 3,
 	workerReportStatusInterval:       time.Second * 3,
 	masterHeartbeatCheckLoopInterval: time.Second * 1,
+}.Adjust()
+
+// Adjust validates the TimeoutConfig and adjusts it
+func (config TimeoutConfig) Adjust() TimeoutConfig {
+	var tc TimeoutConfig = config
+	// worker timeout duration must be 2 times larger than worker heartbeat interval
+	if tc.workerTimeoutDuration < 2*tc.workerHeartbeatInterval+time.Second*3 {
+		tc.workerTimeoutDuration = 2*tc.workerHeartbeatInterval + time.Second*3
+	}
+	return tc
 }
 
 type WorkerStatus struct {
@@ -124,11 +134,21 @@ type (
 		NodeID      p2p.NodeID `json:"node-id"`
 		Epoch       Epoch      `json:"epoch"`
 		Initialized bool       `json:"initialized"`
+		Tp          WorkerType `json:"type"`
 
-		// Ext holds business-specific data
-		MasterMetaExt *MasterMetaExt `json:"meta-ext"`
+		// Config holds business-specific data
+		Config []byte `json:"config"`
+		// TODO: add master status and checkpoint data
 	}
 )
+
+func (m *MasterMetaKVData) Marshal() ([]byte, error) {
+	return json.Marshal(m)
+}
+
+func (m *MasterMetaKVData) Unmarshal(data []byte) error {
+	return json.Unmarshal(data, m)
+}
 
 type WorkerMetaKVData struct {
 	MasterID   Master           `json:"id"`

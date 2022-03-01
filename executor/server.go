@@ -7,6 +7,19 @@ import (
 
 	"github.com/hanfei1991/microcosm/pkg/deps"
 
+	"github.com/pingcap/tiflow/dm/pkg/log"
+	p2pImpl "github.com/pingcap/tiflow/pkg/p2p"
+	"github.com/pingcap/tiflow/pkg/security"
+	"github.com/pingcap/tiflow/pkg/tcpserver"
+	"go.etcd.io/etcd/clientv3"
+	"go.etcd.io/etcd/pkg/logutil"
+	"go.uber.org/zap"
+	"go.uber.org/zap/zapcore"
+	"golang.org/x/sync/errgroup"
+	"golang.org/x/time/rate"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/backoff"
+
 	"github.com/hanfei1991/microcosm/client"
 	"github.com/hanfei1991/microcosm/executor/runtime"
 	"github.com/hanfei1991/microcosm/executor/worker"
@@ -22,18 +35,6 @@ import (
 	"github.com/hanfei1991/microcosm/pkg/serverutils"
 	"github.com/hanfei1991/microcosm/test"
 	"github.com/hanfei1991/microcosm/test/mock"
-	"github.com/pingcap/tiflow/dm/pkg/log"
-	p2pImpl "github.com/pingcap/tiflow/pkg/p2p"
-	"github.com/pingcap/tiflow/pkg/security"
-	"github.com/pingcap/tiflow/pkg/tcpserver"
-	"go.etcd.io/etcd/clientv3"
-	"go.etcd.io/etcd/pkg/logutil"
-	"go.uber.org/zap"
-	"go.uber.org/zap/zapcore"
-	"golang.org/x/sync/errgroup"
-	"golang.org/x/time/rate"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/backoff"
 )
 
 type Server struct {
@@ -192,7 +193,7 @@ func (s *Server) DispatchTask(ctx context.Context, req *pb.DispatchTaskRequest) 
 	dctx = dctx.WithDeps(dp)
 	dctx.Environ.NodeID = p2p.NodeID(s.info.ID)
 	dctx.Environ.Addr = s.info.Addr
-	masterMeta := &lib.MasterMetaExt{
+	masterMeta := &lib.MasterMetaKVData{
 		// GetWorkerId here returns id of current unit
 		ID:     req.GetWorkerId(),
 		Tp:     lib.WorkerType(req.GetTaskTypeId()),
@@ -202,7 +203,7 @@ func (s *Server) DispatchTask(ctx context.Context, req *pb.DispatchTaskRequest) 
 	if err != nil {
 		return nil, err
 	}
-	dctx.Environ.MasterMetaExt = metaBytes
+	dctx.Environ.MasterMetaBytes = metaBytes
 
 	newWorker, err := registry.GlobalWorkerRegistry().CreateWorker(
 		dctx,
