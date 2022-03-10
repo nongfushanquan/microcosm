@@ -37,6 +37,7 @@ type workerManager interface {
 	GetWorkers() map[WorkerID]WorkerHandle
 	GetStatus(id WorkerID) (*WorkerStatus, bool)
 	CheckStatusUpdate(ctx context.Context) error
+	OnWorkerStatusUpdated(msg *WorkerStatusUpdatedMessage)
 }
 
 type workerManagerFsmState = int32
@@ -219,6 +220,20 @@ func (m *workerManagerImpl) asyncDeleteTombstone(ctx context.Context, id WorkerI
 	return nil
 }
 
+func (m *workerManagerImpl) OnWorkerStatusUpdated(msg *WorkerStatusUpdatedMessage) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	receiver, ok := m.statusReceivers[msg.FromWorkerID]
+	if !ok {
+		log.L().Warn("Received worker status notification for non-existing worker",
+			zap.Any("msg", msg))
+		return
+	}
+
+	receiver.OnNotification(msg)
+}
+
 func (m *workerManagerImpl) CheckStatusUpdate(ctx context.Context) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -260,7 +275,7 @@ func (m *workerManagerImpl) Tick(
 	for workerID, workerInfo := range m.workerInfos {
 		// `justOnlined` indicates that the online event has not been notified,
 		// and `hasPendingHeartbeat` indicates that we have received a heartbeat and
-		// has not sent the Pong yet.
+		// has not sent the Pong yet.ctx context.Context,
 		if workerInfo.justOnlined && workerInfo.hasPendingHeartbeat && workerInfo.statusInitialized.Load() {
 			workerInfo.justOnlined = false
 			onlinedWorkers = append(onlinedWorkers, workerInfo)
@@ -388,8 +403,13 @@ func (m *workerManagerImpl) addWorker(id WorkerID, executorNodeID p2p.NodeID) er
 
 	if _, exists := m.tombstones[id]; exists {
 		if m.fsmState.Load() != workerManagerWaitingHeartbeats {
-			log.L().Panic("Discovered a worker whose status is not persisted",
-				zap.String("worker-id", id), zap.String("executor-id", executorNodeID))
+			// TODO: confirm whether this check is needed
+			// when the workerID doesn't change, such as failover of a job master,
+			// the check will be true here
+			log.L().Warn("Discovered a worker whose status is not persisted",
+				zap.String("worker-id", id), zap.String("executor-id", executorNodeID),
+				zap.Int32("fsm-state", m.fsmState.Load()),
+			)
 		}
 		delete(m.tombstones, id)
 	}
@@ -465,14 +485,12 @@ func (m *workerManagerImpl) OnWorkerCreated(ctx context.Context, id WorkerID, ex
 func (m *workerManagerImpl) OnWorkerOffline(ctx context.Context, id WorkerID) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	r, ok := m.statusReceivers[id]
-	if !ok {
+
+	if _, ok := m.statusReceivers[id]; !ok {
 		log.L().Warn("worker not found in status receivers", zap.String("workerID", id))
-		return nil
 	}
-	topic := workerStatusUpdatedTopic(r.workerMetaClient.MasterID(), r.workerID)
-	_, err := r.messageHandlerManager.UnregisterHandler(ctx, topic)
-	return err
+	delete(m.statusReceivers, id)
+	return nil
 }
 
 func (m *workerManagerImpl) MessageSender() p2p.MessageSender {

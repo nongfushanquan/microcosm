@@ -2,9 +2,11 @@ package servermaster
 
 import (
 	"sync"
+	"time"
 
 	"github.com/hanfei1991/microcosm/lib"
 	"github.com/hanfei1991/microcosm/pb"
+	"github.com/hanfei1991/microcosm/pkg/clock"
 	"github.com/hanfei1991/microcosm/pkg/errors"
 	"github.com/pingcap/tiflow/dm/pkg/log"
 	"go.uber.org/zap"
@@ -13,6 +15,7 @@ import (
 type jobHolder struct {
 	lib.WorkerHandle
 	*lib.MasterMetaKVData
+	waitAckStartTime time.Time
 }
 
 // JobFsm manages state of all job masters, job master state forms a finite-state
@@ -50,8 +53,9 @@ type JobFsm struct {
 
 	jobsMu      sync.RWMutex
 	pendingJobs map[lib.MasterID]*lib.MasterMetaKVData
-	waitAckJobs map[lib.MasterID]*lib.MasterMetaKVData
+	waitAckJobs map[lib.MasterID]*jobHolder
 	onlineJobs  map[lib.MasterID]*jobHolder
+	clocker     clock.Clock
 }
 
 // JobStats defines a statistics interface for JobFsm
@@ -62,34 +66,59 @@ type JobStats interface {
 func NewJobFsm() *JobFsm {
 	return &JobFsm{
 		pendingJobs: make(map[lib.MasterID]*lib.MasterMetaKVData),
-		waitAckJobs: make(map[lib.MasterID]*lib.MasterMetaKVData),
+		waitAckJobs: make(map[lib.MasterID]*jobHolder),
 		onlineJobs:  make(map[lib.MasterID]*jobHolder),
+		clocker:     clock.New(),
 	}
 }
 
 func (fsm *JobFsm) QueryJob(jobID lib.MasterID) *pb.QueryJobResponse {
-	fsm.jobsMu.Lock()
-	defer fsm.jobsMu.Unlock()
-	resp := &pb.QueryJobResponse{}
-	meta, ok := fsm.pendingJobs[jobID]
-	if ok {
-		resp.Tp = int64(meta.Tp)
-		resp.Config = meta.Config
-		resp.Status = pb.QueryJobResponse_pending
+	checkPendingJob := func() *pb.QueryJobResponse {
+		fsm.jobsMu.Lock()
+		defer fsm.jobsMu.Unlock()
+
+		meta, ok := fsm.pendingJobs[jobID]
+		if !ok {
+			return nil
+		}
+		resp := &pb.QueryJobResponse{
+			Tp:     int64(meta.Tp),
+			Config: meta.Config,
+			Status: pb.QueryJobResponse_pending,
+		}
 		return resp
 	}
-	meta, ok = fsm.waitAckJobs[jobID]
-	if ok {
-		resp.Tp = int64(meta.Tp)
-		resp.Config = meta.Config
-		resp.Status = pb.QueryJobResponse_dispatched
+
+	checkWaitAckJob := func() *pb.QueryJobResponse {
+		fsm.jobsMu.Lock()
+		defer fsm.jobsMu.Unlock()
+
+		job, ok := fsm.waitAckJobs[jobID]
+		if !ok {
+			return nil
+		}
+		meta := job.MasterMetaKVData
+		resp := &pb.QueryJobResponse{
+			Tp:     int64(meta.Tp),
+			Config: meta.Config,
+			Status: pb.QueryJobResponse_dispatched,
+		}
 		return resp
 	}
-	job, ok := fsm.onlineJobs[jobID]
-	resp.Status = pb.QueryJobResponse_online
-	if ok {
-		resp.Tp = int64(job.Tp)
-		resp.Config = job.Config
+
+	checkOnlineJob := func() *pb.QueryJobResponse {
+		fsm.jobsMu.Lock()
+		defer fsm.jobsMu.Unlock()
+
+		job, ok := fsm.onlineJobs[jobID]
+		if !ok {
+			return nil
+		}
+		resp := &pb.QueryJobResponse{
+			Tp:     int64(job.Tp),
+			Config: job.Config,
+			Status: pb.QueryJobResponse_online,
+		}
 		jobInfo, err := job.ToPB()
 		// TODO (zixiong) ToPB should handle the tombstone situation gracefully.
 		if err != nil {
@@ -117,18 +146,25 @@ func (fsm *JobFsm) QueryJob(jobID lib.MasterID) *pb.QueryJobResponse {
 			// TODO think about
 			log.L().Panic("Unexpected Job Info")
 		}
-	} else {
-		resp.Err = &pb.Error{
-			Code: pb.ErrorCode_UnKnownJob,
-		}
+		return nil
 	}
-	return resp
+
+	if resp := checkPendingJob(); resp != nil {
+		return resp
+	}
+	if resp := checkWaitAckJob(); resp != nil {
+		return resp
+	}
+	return checkOnlineJob()
 }
 
 func (fsm *JobFsm) JobDispatched(job *lib.MasterMetaKVData) {
 	fsm.jobsMu.Lock()
 	defer fsm.jobsMu.Unlock()
-	fsm.waitAckJobs[job.ID] = job
+	fsm.waitAckJobs[job.ID] = &jobHolder{
+		MasterMetaKVData: job,
+		waitAckStartTime: fsm.clocker.Now(),
+	}
 }
 
 func (fsm *JobFsm) IterPendingJobs(dispatchJobFn func(job *lib.MasterMetaKVData) (string, error)) error {
@@ -142,8 +178,30 @@ func (fsm *JobFsm) IterPendingJobs(dispatchJobFn func(job *lib.MasterMetaKVData)
 		}
 		delete(fsm.pendingJobs, oldJobID)
 		job.ID = id
-		fsm.waitAckJobs[id] = job
+		fsm.waitAckJobs[id] = &jobHolder{
+			MasterMetaKVData: job,
+			waitAckStartTime: fsm.clocker.Now(),
+		}
 		log.L().Info("job master recovered", zap.Any("job", job))
+	}
+
+	return nil
+}
+
+func (fsm *JobFsm) IterWaitAckJobs(dispatchJobFn func(job *lib.MasterMetaKVData) (string, error)) error {
+	fsm.jobsMu.Lock()
+	defer fsm.jobsMu.Unlock()
+
+	for id, job := range fsm.waitAckJobs {
+		duration := fsm.clocker.Since(job.waitAckStartTime)
+		if duration > defaultWorkerTimeout {
+			_, err := dispatchJobFn(job.MasterMetaKVData)
+			if err != nil {
+				return err
+			}
+			fsm.waitAckJobs[id].waitAckStartTime = fsm.clocker.Now()
+			log.L().Info("job master doesn't receive heartbeat in time, recreate it", zap.Any("job", job))
+		}
 	}
 
 	return nil
@@ -159,13 +217,13 @@ func (fsm *JobFsm) JobOnline(worker lib.WorkerHandle) error {
 	}
 	fsm.onlineJobs[worker.ID()] = &jobHolder{
 		WorkerHandle:     worker,
-		MasterMetaKVData: job,
+		MasterMetaKVData: job.MasterMetaKVData,
 	}
 	delete(fsm.waitAckJobs, worker.ID())
 	return nil
 }
 
-func (fsm *JobFsm) JobOffline(worker lib.WorkerHandle) {
+func (fsm *JobFsm) JobOffline(worker lib.WorkerHandle, needFailover bool) {
 	fsm.jobsMu.Lock()
 	defer fsm.jobsMu.Unlock()
 
@@ -174,7 +232,9 @@ func (fsm *JobFsm) JobOffline(worker lib.WorkerHandle) {
 		log.L().Warn("non-online worker offline, ignore it", zap.String("id", worker.ID()))
 		return
 	}
-	fsm.pendingJobs[worker.ID()] = job.MasterMetaKVData
+	if needFailover {
+		fsm.pendingJobs[worker.ID()] = job.MasterMetaKVData
+	}
 	delete(fsm.onlineJobs, worker.ID())
 }
 
@@ -186,7 +246,7 @@ func (fsm *JobFsm) JobDispatchFailed(worker lib.WorkerHandle) error {
 	if !ok {
 		return errors.ErrWorkerNotFound.GenWithStackByArgs(worker.ID())
 	}
-	fsm.pendingJobs[worker.ID()] = job
+	fsm.pendingJobs[worker.ID()] = job.MasterMetaKVData
 	delete(fsm.waitAckJobs, worker.ID())
 	return nil
 }

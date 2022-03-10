@@ -13,6 +13,7 @@ import (
 	"github.com/hanfei1991/microcosm/pkg/deps"
 	"github.com/hanfei1991/microcosm/pkg/metadata"
 	"github.com/hanfei1991/microcosm/pkg/p2p"
+	"github.com/hanfei1991/microcosm/pkg/resource"
 )
 
 func MockBaseWorker(
@@ -26,6 +27,7 @@ func MockBaseWorker(
 		MessageHandlerManager: p2p.NewMockMessageHandlerManager(),
 		MessageSender:         p2p.NewMockMessageSender(),
 		MetaKVClient:          metadata.NewMetaMock(),
+		ResourceProxy:         resource.NewMockProxy(workerID),
 	}
 	err := dp.Provide(func() workerParamListForTest {
 		return params
@@ -58,7 +60,7 @@ func MockBaseWorkerWaitUpdateStatus(
 	t *testing.T,
 	worker *DefaultBaseWorker,
 ) {
-	topic := workerStatusUpdatedTopic(worker.masterClient.MasterID(), worker.masterClient.workerID)
+	topic := WorkerStatusUpdatedTopic(worker.masterClient.MasterID())
 	masterNode := worker.masterClient.MasterNode()
 	require.Eventually(t, func() bool {
 		_, ok := worker.messageSender.(*p2p.MockMessageSender).TryPop(masterNode, topic)

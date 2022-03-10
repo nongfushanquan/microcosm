@@ -2,12 +2,13 @@ package example
 
 import (
 	"context"
+	"os"
 	"testing"
 	"time"
 
 	"github.com/pingcap/tiflow/dm/pkg/log"
 	"github.com/stretchr/testify/require"
-	"go.etcd.io/etcd/clientv3"
+	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"github.com/hanfei1991/microcosm/lib"
 )
@@ -37,6 +38,13 @@ func TestExampleWorker(t *testing.T) {
 	require.NoError(t, err)
 	err = worker.Tick(ctx)
 	require.NoError(t, err)
+
+	require.FileExists(t, "./unit_test_resources/worker/1.txt")
+	require.FileExists(t, "./unit_test_resources/worker/2.txt")
+	defer func() {
+		err = os.RemoveAll("./unit_test_resources/worker")
+		require.NoError(t, err)
+	}()
 
 	time.Sleep(time.Second)
 	require.Eventually(t, func() bool {

@@ -59,12 +59,13 @@ var (
 
 	ErrWorkerTypeNotFound         = errors.Normalize("worker type is not found: type %d", errors.RFCCodeText("DFLOW:ErrWorkerTypeNotFound"))
 	ErrWorkerNotFound             = errors.Normalize("worker is not found: worker ID %s", errors.RFCCodeText("DFLOW:ErrWorkerNotFound"))
-	ErrWorkerOffline              = errors.Normalize("worker is offline: workerID %s", errors.RFCCodeText("DFLOW:ErrWorkerOffline"))
+	ErrWorkerOffline              = errors.Normalize("worker is offline: workerID: %s, error message: %s", errors.RFCCodeText("DFLOW:ErrWorkerOffline"))
 	ErrWorkerTimedOut             = errors.Normalize("worker heartbeat timed out: workerID %s", errors.RFCCodeText("DFLOW:ErrWorkerTimedOut"))
 	ErrWorkerSuicide              = errors.Normalize("worker has committed suicide due to master(%s) having timed out", errors.RFCCodeText("DFLOW:ErrWorkerSuicide"))
 	ErrWorkerNoMeta               = errors.Normalize("worker metadata does not exist", errors.RFCCodeText("DFLOW:ErrWorkerNoMeta"))
 	ErrWorkerUpdateStatusTryAgain = errors.Normalize("worker should try again in updating the status", errors.RFCCodeText("DFLOW:ErrWorkerUpdateStatusTryAgain"))
 	ErrInvalidJobType             = errors.Normalize("invalid job type: %s", errors.RFCCodeText("DFLOW:ErrInvalidJobType"))
+	ErrWorkerFinish               = errors.Normalize("worker finished and exited", errors.RFCCodeText("DFLOW:ErrWorkerFinish"))
 
 	// master etcd related errors
 	ErrMasterEtcdCreateSessionFail    = errors.Normalize("failed to create Etcd session", errors.RFCCodeText("DFLOW:ErrMasterEtcdCreateSessionFail"))
@@ -83,6 +84,10 @@ var (
 	ErrExecutorUnknownOperator    = errors.Normalize("operator type %d is unknown", errors.RFCCodeText("DFLOW:ErrOperatorUnknown"))
 	ErrExecutorSessionDone        = errors.Normalize("executor %s session done", errors.RFCCodeText("DFLOW:ErrExecutorSessionDone"))
 	ErrRuntimeReachedCapacity     = errors.Normalize("runtime has reached its capacity %d", errors.RFCCodeText("DFLOW:ErrRuntimeReachedCapacity"))
+	ErrRuntimeIsClosed            = errors.Normalize("runtime has been closed", errors.RFCCodeText("DFLOW:ErrRuntimeIsClosed"))
+	ErrRuntimeInitQueuingTimeOut  = errors.Normalize("a task has waited too long to be initialized", errors.RFCCodeText("DFLOW:ErrRuntimeInitQueuingTimeOut"))
+	ErrRuntimeDuplicateTaskID     = errors.Normalize("trying to add a task with the same ID as an existing one", errors.RFCCodeText("DFLOW:ErrRuntimeDuplicateTaskID %s"))
+	ErrRuntimeClosed              = errors.Normalize("runtime has been closed", errors.RFCCodeText("DFLOW:ErrRuntimeClosed"))
 
 	// planner related errors
 	ErrPlannerDAGDepthExceeded = errors.Normalize("dag depth exceeded: %d", errors.RFCCodeText("DFLOW:ErrPlannerDAGDepthExceeded"))

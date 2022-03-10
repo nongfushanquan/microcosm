@@ -27,7 +27,7 @@ import (
 	"github.com/hanfei1991/microcosm/pkg/errors"
 	"github.com/hanfei1991/microcosm/pkg/etcdutils"
 	"github.com/pingcap/tiflow/dm/pkg/log"
-	"go.etcd.io/etcd/embed"
+	"go.etcd.io/etcd/server/v3/embed"
 	"go.uber.org/zap"
 )
 
@@ -40,6 +40,9 @@ const (
 	defaultCampaignTimeout    = 5 * time.Second
 	defaultDiscoverTicker     = 3 * time.Second
 	defaultMetricInterval     = 15 * time.Second
+	// TODO: make it configurable, and must be larger than the
+	// workerTimeoutDuration (15s by default) in executor
+	defaultWorkerTimeout = 16 * time.Second
 
 	defaultPeerUrls            = "http://127.0.0.1:8291"
 	defaultInitialClusterState = embed.ClusterStateFlagNew
@@ -72,7 +75,8 @@ func NewConfig() *Config {
 	fs.StringVar(&cfg.LogFormat, "log-format", "text", `the format of the log, "text" or "json"`)
 	// fs.StringVar(&cfg.LogRotate, "log-rotate", "day", "log file rotate type, hour/day")
 
-	fs.StringVar(&cfg.Etcd.Name, "name", "", "human-readable name for this DM-master member")
+	fs.StringVar(&cfg.Etcd.Name, "name", "", "human-readable name for this DF-master member")
+	fs.StringVar(&cfg.Etcd.DataDir, "data-dir", "", "data directory for etcd using")
 	fs.StringVar(&cfg.Etcd.InitialCluster, "initial-cluster", "", fmt.Sprintf("initial cluster configuration for bootstrapping, e.g. dm-master=%s", defaultPeerUrls))
 	fs.StringVar(&cfg.Etcd.PeerUrls, "peer-urls", defaultPeerUrls, "URLs for peer traffic")
 	fs.StringVar(&cfg.Etcd.AdvertisePeerUrls, "advertise-peer-urls", "", `advertise URLs for peer traffic (default "${peer-urls}")`)

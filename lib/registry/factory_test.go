@@ -12,6 +12,7 @@ import (
 	"github.com/hanfei1991/microcosm/pkg/deps"
 	"github.com/hanfei1991/microcosm/pkg/metadata"
 	"github.com/hanfei1991/microcosm/pkg/p2p"
+	"github.com/hanfei1991/microcosm/pkg/resource"
 )
 
 type paramList struct {
@@ -20,6 +21,7 @@ type paramList struct {
 	MessageHandlerManager p2p.MessageHandlerManager
 	MessageSender         p2p.MessageSender
 	MetaKVClient          metadata.MetaKV
+	ResourceProxy         resource.Proxy
 }
 
 func makeCtxWithMockDeps(t *testing.T) *dcontext.Context {
@@ -29,6 +31,7 @@ func makeCtxWithMockDeps(t *testing.T) *dcontext.Context {
 			MessageHandlerManager: p2p.NewMockMessageHandlerManager(),
 			MessageSender:         p2p.NewMockMessageSender(),
 			MetaKVClient:          metadata.NewMetaMock(),
+			ResourceProxy:         resource.NewMockProxy("makeCtxWithMockDeps"),
 		}
 	})
 	require.NoError(t, err)
@@ -39,13 +42,13 @@ func TestNewSimpleWorkerFactory(t *testing.T) {
 	dummyConstructor := func(ctx *dcontext.Context, id lib.WorkerID, masterID lib.MasterID, config WorkerConfig) lib.WorkerImpl {
 		return fake.NewDummyWorker(ctx, id, masterID, config)
 	}
-	fac := NewSimpleWorkerFactory(dummyConstructor, &dummyConfig{})
-	config, err := fac.DeserializeConfig([]byte(`{"Val":1}`))
+	fac := NewSimpleWorkerFactory(dummyConstructor, &fake.WorkerConfig{})
+	config, err := fac.DeserializeConfig([]byte(`{"target-tick":100}`))
 	require.NoError(t, err)
-	require.Equal(t, &dummyConfig{Val: 1}, config)
+	require.Equal(t, &fake.WorkerConfig{TargetTick: 100}, config)
 
 	ctx := makeCtxWithMockDeps(t)
-	newWorker, err := fac.NewWorkerImpl(ctx, "my-worker", "my-master", &dummyConfig{Val: 1})
+	newWorker, err := fac.NewWorkerImpl(ctx, "my-worker", "my-master", &fake.WorkerConfig{TargetTick: 100})
 	require.NoError(t, err)
 	require.IsType(t, &fake.Worker{}, newWorker)
 }

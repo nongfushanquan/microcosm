@@ -5,14 +5,12 @@ import (
 	"strings"
 	"time"
 
-	"github.com/hanfei1991/microcosm/pkg/deps"
-
 	"github.com/pingcap/tiflow/dm/pkg/log"
 	p2pImpl "github.com/pingcap/tiflow/pkg/p2p"
 	"github.com/pingcap/tiflow/pkg/security"
 	"github.com/pingcap/tiflow/pkg/tcpserver"
-	"go.etcd.io/etcd/clientv3"
-	"go.etcd.io/etcd/pkg/logutil"
+	"go.etcd.io/etcd/client/pkg/v3/logutil"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 	"golang.org/x/sync/errgroup"
@@ -29,9 +27,11 @@ import (
 	"github.com/hanfei1991/microcosm/pb"
 	"github.com/hanfei1991/microcosm/pkg/config"
 	dcontext "github.com/hanfei1991/microcosm/pkg/context"
+	"github.com/hanfei1991/microcosm/pkg/deps"
 	"github.com/hanfei1991/microcosm/pkg/errors"
 	"github.com/hanfei1991/microcosm/pkg/metadata"
 	"github.com/hanfei1991/microcosm/pkg/p2p"
+	"github.com/hanfei1991/microcosm/pkg/resource"
 	"github.com/hanfei1991/microcosm/pkg/serverutils"
 	"github.com/hanfei1991/microcosm/test"
 	"github.com/hanfei1991/microcosm/test/mock"
@@ -133,7 +133,7 @@ func (s *Server) ResumeBatchTasks(ctx context.Context, req *pb.PauseBatchTasksRe
 	return &pb.PauseBatchTasksResponse{}, nil
 }
 
-func (s *Server) buildDeps() (*deps.Deps, error) {
+func (s *Server) buildDeps(wid lib.WorkerID) (*deps.Deps, error) {
 	deps := deps.NewDeps()
 	err := deps.Provide(func() p2p.MessageHandlerManager {
 		return s.msgServer.MakeHandlerManager()
@@ -170,6 +170,17 @@ func (s *Server) buildDeps() (*deps.Deps, error) {
 		return nil, err
 	}
 
+	proxy, err := resource.DefaultBroker.NewProxyForWorker(context.TODO(), wid)
+	if err != nil {
+		return nil, err
+	}
+	err = deps.Provide(func() resource.Proxy {
+		return proxy
+	})
+	if err != nil {
+		return nil, err
+	}
+
 	return deps, nil
 }
 
@@ -186,7 +197,7 @@ func (s *Server) DispatchTask(ctx context.Context, req *pb.DispatchTaskRequest) 
 		ServerMasterClient:    s.cli,
 	}
 
-	dp, err := s.buildDeps()
+	dp, err := s.buildDeps(req.GetWorkerId())
 	if err != nil {
 		return nil, err
 	}

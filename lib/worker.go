@@ -18,6 +18,7 @@ import (
 	derror "github.com/hanfei1991/microcosm/pkg/errors"
 	"github.com/hanfei1991/microcosm/pkg/metadata"
 	"github.com/hanfei1991/microcosm/pkg/p2p"
+	"github.com/hanfei1991/microcosm/pkg/resource"
 )
 
 type Worker interface {
@@ -59,6 +60,12 @@ type BaseWorker interface {
 	MetaKVClient() metadata.MetaKV
 	UpdateStatus(ctx context.Context, status WorkerStatus) error
 	SendMessage(ctx context.Context, topic p2p.Topic, message interface{}) (bool, error)
+	Resource() resource.Proxy
+	// Exit should be called when worker (in user logic) wants to exit
+	// - If err is nil, it means worker exits normally
+	// - If err is not nil, it means worker meets error, and after worker exits
+	//   it will be failover.
+	Exit(ctx context.Context, status WorkerStatus, err error) error
 }
 
 type DefaultBaseWorker struct {
@@ -67,6 +74,7 @@ type DefaultBaseWorker struct {
 	messageHandlerManager p2p.MessageHandlerManager
 	messageSender         p2p.MessageSender
 	metaKVClient          metadata.MetaKV
+	resourceProxy         resource.Proxy
 
 	masterClient *masterClient
 	masterID     MasterID
@@ -95,6 +103,7 @@ type workerParams struct {
 	MessageHandlerManager p2p.MessageHandlerManager
 	MessageSender         p2p.MessageSender
 	MetaKVClient          metadata.MetaKV
+	ResourceProxy         resource.Proxy
 }
 
 func NewBaseWorker(
@@ -114,6 +123,7 @@ func NewBaseWorker(
 		messageHandlerManager: params.MessageHandlerManager,
 		messageSender:         params.MessageSender,
 		metaKVClient:          params.MetaKVClient,
+		resourceProxy:         params.ResourceProxy,
 
 		masterID:      masterID,
 		id:            workerID,
@@ -234,8 +244,12 @@ func (w *DefaultBaseWorker) Poll(ctx context.Context) error {
 
 func (w *DefaultBaseWorker) doClose() {
 	w.cancelMu.Lock()
-	w.cancelBgTasks()
-	w.cancelPool()
+	if w.cancelBgTasks != nil {
+		w.cancelBgTasks()
+	}
+	if w.cancelPool != nil {
+		w.cancelPool()
+	}
 	w.cancelMu.Unlock()
 
 	closeCtx, cancel := context.WithTimeout(context.Background(), time.Second*3)
@@ -275,12 +289,44 @@ func (w *DefaultBaseWorker) UpdateStatus(ctx context.Context, status WorkerStatu
 	return nil
 }
 
+// safeUpdateStatus is used when worker exits, it first stores worker status
+// into metastore, and then tries to send status to master. We store status first
+// because SendStatus could fail when pending status exits.
+func (w *DefaultBaseWorker) safeUpdateStatus(ctx context.Context, status WorkerStatus) error {
+	err := w.statusSender.SafeSendStatus(ctx, status)
+	if err != nil && derror.ErrWorkerUpdateStatusTryAgain.NotEqual(err) {
+		return err
+	}
+	return nil
+}
+
 func (w *DefaultBaseWorker) SendMessage(
 	ctx context.Context,
 	topic p2p.Topic,
 	message interface{},
 ) (bool, error) {
 	return w.messageSender.SendToNode(ctx, w.masterClient.MasterNode(), topic, message)
+}
+
+func (w *DefaultBaseWorker) Resource() resource.Proxy {
+	return w.resourceProxy
+}
+
+func (w *DefaultBaseWorker) Exit(ctx context.Context, status WorkerStatus, err error) error {
+	if err != nil {
+		status.Code = WorkerStatusError
+		if err1 := w.safeUpdateStatus(ctx, status); err1 != nil {
+			return err1
+		}
+		return err
+	}
+
+	status.Code = WorkerStatusFinished
+	if err1 := w.safeUpdateStatus(ctx, status); err1 != nil {
+		return err1
+	}
+
+	return derror.ErrWorkerFinish.FastGenByArgs()
 }
 
 func (w *DefaultBaseWorker) startBackgroundTasks() {
@@ -528,10 +574,12 @@ func (m *masterClient) SendHeartBeat(ctx context.Context, clock clock.Clock) err
 		Epoch:        m.masterEpoch,
 	}
 
-	ok, err := m.messageSender.SendToNode(ctx, m.masterNode, HeartbeatPingTopic(m.masterID, m.workerID), heartbeatMsg)
+	log.L().Debug("sending heartbeat", zap.String("worker", m.workerID))
+	ok, err := m.messageSender.SendToNode(ctx, m.masterNode, HeartbeatPingTopic(m.masterID), heartbeatMsg)
 	if err != nil {
 		return errors.Trace(err)
 	}
+	log.L().Debug("sending heartbeat success", zap.String("worker", m.workerID))
 	if !ok {
 		log.L().Warn("sending heartbeat ping encountered ErrPeerMessageSendTryAgain")
 	}
