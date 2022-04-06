@@ -16,38 +16,54 @@ type jobHolder struct {
 	lib.WorkerHandle
 	*lib.MasterMetaKVData
 	waitAckStartTime time.Time
+	// True means the job is loaded from metastore during jobmanager failover.
+	// Otherwise it is added by SubmitJob.
+	addFromFailover bool
 }
 
 // JobFsm manages state of all job masters, job master state forms a finite-state
 // machine. Note job master managed in JobFsm is in running status, which means
 // the job is not terminated or finished.
 //
-// ,-------.                   ,-------.            ,-------.
-// |WaitAck|                   |Online |            |Pending|
-// `---+---'                   `---+---'            `---+---'
-//     |                           |                    |
-//     | Master                    |                    |
-//     |  .OnWorkerOnline          |                    |
-//     |-------------------------->|                    |
-//     |                           |                    |
-//     |                           |                    |
-//     |                           | Master             |
-//     |                           |   .OnWorkerOffline |
-//     |                           |------------------->|
-//     |                           |                    |
-//     |                           |                    |
-//     |                           | Master             |
-//     |                           |   .CreateWorker    |
-//     |<-----------------------------------------------|
-//     |                           |                    |
-//     |                           |                    |
-//     | Master                    |                    |
-//     |  .OnWorkerDispatched      |                    |
-//     |  (with error)             |                    |
-//     |----------------------------------------------->|
-//     |                           |                    |
-//     |                           |                    |
-//     |                           |                    |
+// ,-------.                   ,-------.            ,-------.       ,--------.
+// |WaitAck|                   |Online |            |Pending|       |Finished|
+// `---+---'                   `---+---'            `---+---'       `---+----'
+//     |                           |                    |               |
+//     | Master                    |                    |               |
+//     |  .OnWorkerOnline          |                    |               |
+//     |-------------------------->|                    |               |
+//     |                           |                    |               |
+//     |                           | Master             |               |
+//     |                           |   .OnWorkerOffline |               |
+//     |                           |   (failover)       |               |
+//     |                           |------------------->|               |
+//     |                           |                    |               |
+//     |                           | Master             |               |
+//     |                           |   .OnWorkerOffline |               |
+//     |                           |   (finish)         |               |
+//     |                           |----------------------------------->|
+//     |                           |                    |               |
+//     | Master                    |                    |               |
+//     |  .OnWorkerOffline         |                    |               |
+//     |  (failover)               |                    |               |
+//     |----------------------------------------------->|               |
+//     |                           |                    |               |
+//     | Master                    |                    |               |
+//     |  .OnWorkerOffline         |                    |               |
+//     |  (finish)                 |                    |               |
+//     |--------------------------------------------------------------->|
+//     |                           |                    |               |
+//     |                           | Master             |               |
+//     |                           |   .CreateWorker    |               |
+//     |<-----------------------------------------------|               |
+//     |                           |                    |               |
+//     | Master                    |                    |               |
+//     |  .OnWorkerDispatched      |                    |               |
+//     |  (with error)             |                    |               |
+//     |----------------------------------------------->|               |
+//     |                           |                    |               |
+//     |                           |                    |               |
+//     |                           |                    |               |
 type JobFsm struct {
 	JobStats
 
@@ -70,6 +86,12 @@ func NewJobFsm() *JobFsm {
 		onlineJobs:  make(map[lib.MasterID]*jobHolder),
 		clocker:     clock.New(),
 	}
+}
+
+func (fsm *JobFsm) QueryOnlineJob(jobID lib.MasterID) *jobHolder {
+	fsm.jobsMu.RLock()
+	defer fsm.jobsMu.RUnlock()
+	return fsm.onlineJobs[jobID]
 }
 
 func (fsm *JobFsm) QueryJob(jobID lib.MasterID) *pb.QueryJobResponse {
@@ -128,25 +150,11 @@ func (fsm *JobFsm) QueryJob(jobID lib.MasterID) *pb.QueryJobResponse {
 			}
 		} else if jobInfo != nil {
 			resp.JobMasterInfo = jobInfo
-		} else if job.IsTombStone() {
-			resp.JobMasterInfo = &pb.WorkerInfo{}
-			resp.JobMasterInfo.IsTombstone = true
-			status := job.Status()
-			if status != nil {
-				var err error
-				resp.JobMasterInfo.Status, err = status.Marshal()
-				if err != nil {
-					resp.Err = &pb.Error{
-						Code:    pb.ErrorCode_UnknownError,
-						Message: err.Error(),
-					}
-				}
-			}
 		} else {
-			// TODO think about
-			log.L().Panic("Unexpected Job Info")
+			// job master is just timeout but have not call OnOffline.
+			return nil
 		}
-		return nil
+		return resp
 	}
 
 	if resp := checkPendingJob(); resp != nil {
@@ -158,12 +166,13 @@ func (fsm *JobFsm) QueryJob(jobID lib.MasterID) *pb.QueryJobResponse {
 	return checkOnlineJob()
 }
 
-func (fsm *JobFsm) JobDispatched(job *lib.MasterMetaKVData) {
+func (fsm *JobFsm) JobDispatched(job *lib.MasterMetaKVData, addFromFailover bool) {
 	fsm.jobsMu.Lock()
 	defer fsm.jobsMu.Unlock()
 	fsm.waitAckJobs[job.ID] = &jobHolder{
 		MasterMetaKVData: job,
 		waitAckStartTime: fsm.clocker.Now(),
+		addFromFailover:  addFromFailover,
 	}
 }
 
@@ -195,6 +204,11 @@ func (fsm *JobFsm) IterWaitAckJobs(dispatchJobFn func(job *lib.MasterMetaKVData)
 	for id, job := range fsm.waitAckJobs {
 		duration := fsm.clocker.Since(job.waitAckStartTime)
 		if duration > defaultWorkerTimeout {
+			if !job.addFromFailover {
+				log.L().Debug("job master offline delay",
+					zap.Any("job", job), zap.Duration("duration", duration))
+				continue
+			}
 			_, err := dispatchJobFn(job.MasterMetaKVData)
 			if err != nil {
 				return err
@@ -228,14 +242,19 @@ func (fsm *JobFsm) JobOffline(worker lib.WorkerHandle, needFailover bool) {
 	defer fsm.jobsMu.Unlock()
 
 	job, ok := fsm.onlineJobs[worker.ID()]
-	if !ok {
-		log.L().Warn("non-online worker offline, ignore it", zap.String("id", worker.ID()))
-		return
+	if ok {
+		delete(fsm.onlineJobs, worker.ID())
+	} else {
+		job, ok = fsm.waitAckJobs[worker.ID()]
+		if !ok {
+			log.L().Warn("unknown worker, ignore it", zap.String("id", worker.ID()))
+			return
+		}
+		delete(fsm.waitAckJobs, worker.ID())
 	}
 	if needFailover {
 		fsm.pendingJobs[worker.ID()] = job.MasterMetaKVData
 	}
-	delete(fsm.onlineJobs, worker.ID())
 }
 
 func (fsm *JobFsm) JobDispatchFailed(worker lib.WorkerHandle) error {

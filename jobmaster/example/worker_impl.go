@@ -7,8 +7,11 @@ import (
 	"time"
 
 	"github.com/pingcap/tiflow/dm/pkg/log"
+	"go.uber.org/zap"
 
 	"github.com/hanfei1991/microcosm/lib"
+	libModel "github.com/hanfei1991/microcosm/lib/model"
+	"github.com/hanfei1991/microcosm/pkg/p2p"
 )
 
 var _ lib.Worker = &exampleWorker{}
@@ -62,7 +65,13 @@ func (w *exampleWorker) Tick(ctx context.Context) error {
 	w.work.tickCount++
 	count := w.work.tickCount
 	w.work.mu.Unlock()
-	file, err := w.Resource().CreateFile(ctx, strconv.Itoa(count)+".txt")
+
+	storage, err := w.OpenStorage(nil, "/local/example")
+	if err != nil {
+		return err
+	}
+
+	file, err := storage.BrExternalStorage().Create(ctx, strconv.Itoa(count)+".txt")
 	if err != nil {
 		return err
 	}
@@ -70,24 +79,33 @@ func (w *exampleWorker) Tick(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	return file.Close(ctx)
+
+	if err := file.Close(ctx); err != nil {
+		return err
+	}
+	return storage.Persist(ctx)
 }
 
-func (w *exampleWorker) Status() lib.WorkerStatus {
+func (w *exampleWorker) Status() libModel.WorkerStatus {
 	log.L().Info("Status")
-	code := lib.WorkerStatusNormal
+	code := libModel.WorkerStatusNormal
 	w.work.mu.Lock()
 	finished := w.work.finished
 	w.work.mu.Unlock()
 
 	if finished {
-		code = lib.WorkerStatusFinished
+		code = libModel.WorkerStatusFinished
 	}
-	return lib.WorkerStatus{Code: code}
+	return libModel.WorkerStatus{Code: code}
 }
 
 func (w *exampleWorker) OnMasterFailover(reason lib.MasterFailoverReason) error {
 	log.L().Info("OnMasterFailover")
+	return nil
+}
+
+func (w *exampleWorker) OnMasterMessage(topic p2p.Topic, message p2p.MessageValue) error {
+	log.L().Info("OnMasterMessage", zap.Any("message", message))
 	return nil
 }
 

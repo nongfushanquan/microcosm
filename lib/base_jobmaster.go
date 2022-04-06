@@ -7,9 +7,10 @@ import (
 	"github.com/pingcap/tiflow/dm/pkg/log"
 
 	"github.com/hanfei1991/microcosm/executor/worker"
+	libModel "github.com/hanfei1991/microcosm/lib/model"
 	"github.com/hanfei1991/microcosm/model"
 	dcontext "github.com/hanfei1991/microcosm/pkg/context"
-	"github.com/hanfei1991/microcosm/pkg/metadata"
+	"github.com/hanfei1991/microcosm/pkg/meta/metaclient"
 	"github.com/hanfei1991/microcosm/pkg/p2p"
 )
 
@@ -18,24 +19,20 @@ type BaseJobMaster interface {
 	Poll(ctx context.Context) error
 	Close(ctx context.Context) error
 	OnError(err error)
-
-	MetaKVClient() metadata.MetaKV
-
+	MetaKVClient() metaclient.KVClient
 	GetWorkers() map[WorkerID]WorkerHandle
-
 	CreateWorker(workerType WorkerType, config WorkerConfig, cost model.RescUnit) (WorkerID, error)
-
 	Workload() model.RescUnit
-
 	JobMasterID() MasterID
 	ID() worker.RunnableID
-	UpdateJobStatus(ctx context.Context, status WorkerStatus) error
+	UpdateJobStatus(ctx context.Context, status libModel.WorkerStatus) error
+	CurrentEpoch() Epoch
 
 	// Exit should be called when job master (in user logic) wants to exit
 	// - If err is nil, it means job master exits normally
 	// - If err is not nil, it means job master meets error, and after it exits
 	//   it will be failover.
-	Exit(ctx context.Context, status WorkerStatus, err error) error
+	Exit(ctx context.Context, status libModel.WorkerStatus, err error) error
 
 	// IsMasterReady returns whether the master has received heartbeats for all
 	// workers after a fail-over. If this is the first time the JobMaster started up,
@@ -62,15 +59,15 @@ type JobMasterImpl interface {
 	// will be stopped.
 	Tick(ctx context.Context) error
 	CloseImpl(ctx context.Context) error
-
 	OnMasterRecovered(ctx context.Context) error
 	OnWorkerDispatched(worker WorkerHandle, result error) error
 	OnWorkerOnline(worker WorkerHandle) error
 	OnWorkerOffline(worker WorkerHandle, reason error) error
 	OnWorkerMessage(worker WorkerHandle, topic p2p.Topic, message interface{}) error
-
+	OnWorkerStatusUpdated(worker WorkerHandle, newStatus *libModel.WorkerStatus) error
 	Workload() model.RescUnit
 	OnJobManagerFailover(reason MasterFailoverReason) error
+	OnJobManagerMessage(topic p2p.Topic, message interface{}) error
 
 	// IsJobMasterImpl is an empty function used to prevent accidental implementation
 	// of this interface.
@@ -98,7 +95,7 @@ func NewBaseJobMaster(
 	}
 }
 
-func (d *DefaultBaseJobMaster) MetaKVClient() metadata.MetaKV {
+func (d *DefaultBaseJobMaster) MetaKVClient() metaclient.KVClient {
 	return d.master.MetaKVClient()
 }
 
@@ -172,7 +169,7 @@ func (d *DefaultBaseJobMaster) CreateWorker(workerType WorkerType, config Worker
 	return d.master.CreateWorker(workerType, config, cost)
 }
 
-func (d *DefaultBaseJobMaster) UpdateStatus(ctx context.Context, status WorkerStatus) error {
+func (d *DefaultBaseJobMaster) UpdateStatus(ctx context.Context, status libModel.WorkerStatus) error {
 	return d.worker.UpdateStatus(ctx, status)
 }
 
@@ -188,8 +185,12 @@ func (d *DefaultBaseJobMaster) JobMasterID() MasterID {
 	return d.master.MasterID()
 }
 
-func (d *DefaultBaseJobMaster) UpdateJobStatus(ctx context.Context, status WorkerStatus) error {
+func (d *DefaultBaseJobMaster) UpdateJobStatus(ctx context.Context, status libModel.WorkerStatus) error {
 	return d.worker.UpdateStatus(ctx, status)
+}
+
+func (d *DefaultBaseJobMaster) CurrentEpoch() Epoch {
+	return d.master.currentEpoch.Load()
 }
 
 func (d *DefaultBaseJobMaster) IsBaseJobMaster() {
@@ -204,14 +205,18 @@ func (d *DefaultBaseJobMaster) IsMasterReady() bool {
 	return d.master.IsMasterReady()
 }
 
-func (d *DefaultBaseJobMaster) Exit(ctx context.Context, status WorkerStatus, err error) error {
-	// err == nil means job master finished and exited normally
-	if err == nil {
-		err1 := d.master.markStatusCodeInMetadata(ctx, MasterStatusFinished)
-		if err1 != nil {
-			return err1
-		}
+func (d *DefaultBaseJobMaster) Exit(ctx context.Context, status libModel.WorkerStatus, err error) error {
+	var err1 error
+	switch status.Code {
+	case libModel.WorkerStatusFinished:
+		err1 = d.master.markStatusCodeInMetadata(ctx, MasterStatusFinished)
+	case libModel.WorkerStatusStopped:
+		err1 = d.master.markStatusCodeInMetadata(ctx, MasterStatusStopped)
 	}
+	if err1 != nil {
+		return err1
+	}
+
 	return d.worker.Exit(ctx, status, err)
 }
 
@@ -237,6 +242,10 @@ func (j *jobMasterImplAsWorkerImpl) OnMasterFailover(reason MasterFailoverReason
 	return j.inner.OnJobManagerFailover(reason)
 }
 
+func (j *jobMasterImplAsWorkerImpl) OnMasterMessage(topic p2p.Topic, message interface{}) error {
+	return j.inner.OnJobManagerMessage(topic, message)
+}
+
 func (j *jobMasterImplAsWorkerImpl) CloseImpl(ctx context.Context) error {
 	log.L().Panic("unexpected Close call")
 	return nil
@@ -244,6 +253,10 @@ func (j *jobMasterImplAsWorkerImpl) CloseImpl(ctx context.Context) error {
 
 type jobMasterImplAsMasterImpl struct {
 	inner JobMasterImpl
+}
+
+func (j *jobMasterImplAsMasterImpl) OnWorkerStatusUpdated(worker WorkerHandle, newStatus *libModel.WorkerStatus) error {
+	return j.inner.OnWorkerStatusUpdated(worker, newStatus)
 }
 
 func (j *jobMasterImplAsMasterImpl) Tick(ctx context.Context) error {

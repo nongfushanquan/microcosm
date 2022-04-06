@@ -11,7 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/hanfei1991/microcosm/client"
 	"github.com/hanfei1991/microcosm/lib"
 	"github.com/hanfei1991/microcosm/model"
 	"github.com/hanfei1991/microcosm/pb"
@@ -36,12 +35,18 @@ func prepareServerEnv(t *testing.T, name string) (string, *Config, func()) {
 	cfgTpl := `
 master-addr = "127.0.0.1:%d"
 advertise-addr = "127.0.0.1:%d"
+[frame-metastore-conf]
+store-id = "root"
+endpoints = ["127.0.0.1:%d"]
+[user-metastore-conf]
+store-id = "default"
+endpoints = ["127.0.0.1:%d"]
 [etcd]
 name = "%s"
 data-dir = "%s"
 peer-urls = "http://127.0.0.1:%d"
 initial-cluster = "%s=http://127.0.0.1:%d"`
-	cfgStr := fmt.Sprintf(cfgTpl, ports[0], ports[0], name, dir, ports[1], name, ports[1])
+	cfgStr := fmt.Sprintf(cfgTpl, ports[0], ports[0], ports[0], ports[0], name, dir, ports[1], name, ports[1])
 	cfg := NewConfig()
 	err = cfg.configFromString(cfgStr)
 	require.Nil(t, err)
@@ -86,12 +91,18 @@ func TestStartGrpcSrvCancelable(t *testing.T) {
 	cfgTpl := `
 master-addr = "127.0.0.1:%d"
 advertise-addr = "127.0.0.1:%d"
+[frame-metastore-conf]
+store-id = "root"
+endpoints = ["127.0.0.1:%d"]
+[user-metastore-conf]
+store-id = "default"
+endpoints = ["127.0.0.1:%d"]
 [etcd]
 name = "server-master-1"
 data-dir = "%s"
 peer-urls = "http://127.0.0.1:%d"
 initial-cluster = "server-master-1=http://127.0.0.1:%d,server-master-2=http://127.0.0.1:%d"`
-	cfgStr := fmt.Sprintf(cfgTpl, ports[0], ports[0], dir, ports[1], ports[1], ports[2])
+	cfgStr := fmt.Sprintf(cfgTpl, ports[0], ports[0], ports[0], ports[0], dir, ports[1], ports[1], ports[2])
 	cfg := NewConfig()
 	err = cfg.configFromString(cfgStr)
 	require.Nil(t, err)
@@ -146,49 +157,6 @@ func testPrometheusMetrics(t *testing.T, addr string) {
 	require.Nil(t, err)
 }
 
-func TestCheckLeaderAndNeedForward(t *testing.T) {
-	t.Parallel()
-
-	ctx := context.Background()
-	cfg := NewConfig()
-	etcdName := "test-check-leader-and-need-forward"
-	cfg.Etcd.Name = etcdName
-	id := genServerMasterUUID(etcdName)
-	s := &Server{id: id, cfg: cfg}
-	isLeader, needForward := s.isLeaderAndNeedForward(ctx)
-	require.False(t, isLeader)
-	require.False(t, needForward)
-
-	var wg sync.WaitGroup
-	cctx, cancel := context.WithCancel(ctx)
-	startTime := time.Now()
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		isLeader, needForward := s.isLeaderAndNeedForward(cctx)
-		require.False(t, isLeader)
-		require.False(t, needForward)
-	}()
-	cancel()
-	wg.Wait()
-	// should not wait too long time
-	require.Less(t, time.Since(startTime), time.Second)
-
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		isLeader, needForward := s.isLeaderAndNeedForward(ctx)
-		require.True(t, isLeader)
-		require.True(t, needForward)
-	}()
-	time.Sleep(time.Second)
-	s.leaderClient.Lock()
-	s.leaderClient.cli = &client.MasterClientImpl{}
-	s.leaderClient.Unlock()
-	s.leader.Store(&Member{Name: id})
-	wg.Wait()
-}
-
 // Server master requires etcd/gRPC service as the minimum running environment,
 // this case
 // - starts an embed etcd with gRPC service, including message service and
@@ -204,6 +172,8 @@ func TestRunLeaderService(t *testing.T) {
 	defer cancel()
 	s, err := NewServer(cfg, nil)
 	require.Nil(t, err)
+
+	s.registerMetaStore()
 
 	err = s.startGrpcSrv(ctx)
 	require.Nil(t, err)
@@ -224,6 +194,14 @@ func TestRunLeaderService(t *testing.T) {
 	ctx1, cancel1 := context.WithTimeout(ctx, time.Second)
 	defer cancel1()
 	err = s.runLeaderService(ctx1)
+	require.EqualError(t, err, context.DeadlineExceeded.Error())
+
+	// runLeaderService exits, try to campaign to be leader and run leader servcie again
+	err = s.campaign(ctx, time.Second)
+	require.Nil(t, err)
+	ctx2, cancel2 := context.WithTimeout(ctx, time.Second)
+	defer cancel2()
+	err = s.runLeaderService(ctx2)
 	require.EqualError(t, err, context.DeadlineExceeded.Error())
 
 	cancel()

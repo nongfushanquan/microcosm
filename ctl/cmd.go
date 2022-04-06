@@ -8,12 +8,14 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/hanfei1991/microcosm/lib"
-	"github.com/hanfei1991/microcosm/pb"
-	"github.com/hanfei1991/microcosm/pkg/errors"
 	"github.com/pingcap/tiflow/dm/pkg/log"
 	"github.com/spf13/cobra"
 	"go.uber.org/zap"
+
+	"github.com/hanfei1991/microcosm/lib"
+	libModel "github.com/hanfei1991/microcosm/lib/model"
+	"github.com/hanfei1991/microcosm/pb"
+	"github.com/hanfei1991/microcosm/pkg/errors"
 )
 
 func NewQueryJob() *cobra.Command {
@@ -49,7 +51,7 @@ func runQueryJob(cmd *cobra.Command, _ []string) error {
 	case int64(lib.CvsJobMaster):
 		if resp.Status == pb.QueryJobResponse_online && resp.JobMasterInfo != nil {
 			statusBytes := resp.JobMasterInfo.Status
-			status := &lib.WorkerStatus{}
+			status := &libModel.WorkerStatus{}
 			err = json.Unmarshal(statusBytes, status)
 			if err != nil {
 				log.L().Error("failed to query job", zap.Error(err))
@@ -132,5 +134,38 @@ func runSubmitJob(cmd *cobra.Command, _ []string) error {
 		os.Exit(1)
 	}
 	log.L().Info("resp", zap.Any("resp", resp))
+	return nil
+}
+
+func NewPauseJob() *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "pause-job",
+		Short: "pause job",
+		RunE:  runPauseJob,
+	}
+	cmd.Flags().String("job-id", "", "the targeted job id")
+	return cmd
+}
+
+func runPauseJob(cmd *cobra.Command, _ []string) error {
+	id, err := cmd.Flags().GetString("job-id")
+	if err != nil {
+		log.L().Error("error in parse `--job-id`")
+		return err
+	}
+	if id == "" {
+		log.L().Error("job-id should not be empty")
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), rpcTimeout)
+	defer cancel()
+	resp, err := cltManager.MasterClient().PauseJob(ctx, &pb.PauseJobRequest{
+		JobIdStr: id,
+	})
+	if err != nil {
+		log.L().Error("failed to query job", zap.Error(err))
+		os.Exit(1)
+	}
+	log.L().Info("pause result", zap.String("err", resp.Err.String()))
 	return nil
 }

@@ -13,6 +13,7 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/hanfei1991/microcosm/lib"
+	libModel "github.com/hanfei1991/microcosm/lib/model"
 	"github.com/hanfei1991/microcosm/pkg/p2p"
 )
 
@@ -111,9 +112,14 @@ func (s *SubTaskMaster) buildDMUnit(tp lib.WorkerType) unit.Unit {
 }
 
 func (s *SubTaskMaster) Tick(ctx context.Context) error {
-	status := s.GetWorkers()[s.currWorkerID].Status()
+	worker := s.GetWorkers()[s.currWorkerID]
+	if worker == nil {
+		// not ready? will this happen?
+		return nil
+	}
+	status := worker.Status()
 	switch status.Code {
-	case lib.WorkerStatusFinished:
+	case libModel.WorkerStatusFinished:
 		log.L().Info("worker finished", zap.String("currWorkerID", s.currWorkerID))
 		if len(s.workerSeq) > 0 {
 			s.workerSeq = s.workerSeq[1:]
@@ -127,7 +133,7 @@ func (s *SubTaskMaster) Tick(ctx context.Context) error {
 				return lib.StopAfterTick
 			}
 		}
-	case lib.WorkerStatusError:
+	case libModel.WorkerStatusError:
 		// TODO: will print lots of logs, should find a way to expose the error
 		log.L().Info("worker error", zap.String("message", status.ErrorMessage))
 	}
@@ -169,11 +175,26 @@ func (s *SubTaskMaster) OnJobManagerFailover(reason lib.MasterFailoverReason) er
 	return nil
 }
 
+func (s *SubTaskMaster) OnJobManagerMessage(topic p2p.Topic, message p2p.MessageValue) error {
+	log.L().Info("on job manager message", zap.Any("message", message))
+	return nil
+}
+
 func (s *SubTaskMaster) IsJobMasterImpl() {
 	log.L().Info("is job master impl")
 }
 
 func (s *SubTaskMaster) OnMasterFailover(reason lib.MasterFailoverReason) error {
 	log.L().Info("on master failover")
+	return nil
+}
+
+func (s *SubTaskMaster) OnMasterMessage(topic p2p.Topic, message p2p.MessageValue) error {
+	log.L().Info("on master message", zap.Any("message", message))
+	return nil
+}
+
+func (s *SubTaskMaster) OnWorkerStatusUpdated(worker lib.WorkerHandle, newStatus *libModel.WorkerStatus) error {
+	log.L().Info("on worker status updated", zap.String("worker-id", worker.ID()), zap.Any("status", newStatus))
 	return nil
 }

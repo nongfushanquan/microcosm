@@ -2,21 +2,27 @@ package cvs
 
 import (
 	"context"
-	"fmt"
-	"strconv"
+	"encoding/json"
+	"errors"
+	"sync"
 	"time"
+	"unsafe"
 
 	"github.com/pingcap/tiflow/dm/pkg/log"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
 	"google.golang.org/grpc"
 
+	"go.uber.org/atomic"
+
 	cvsTask "github.com/hanfei1991/microcosm/executor/cvsTask"
 	"github.com/hanfei1991/microcosm/executor/worker"
 	"github.com/hanfei1991/microcosm/lib"
+	libModel "github.com/hanfei1991/microcosm/lib/model"
 	"github.com/hanfei1991/microcosm/lib/registry"
 	"github.com/hanfei1991/microcosm/model"
 	"github.com/hanfei1991/microcosm/pb"
+	"github.com/hanfei1991/microcosm/pkg/clock"
 	dcontext "github.com/hanfei1991/microcosm/pkg/context"
 	derrors "github.com/hanfei1991/microcosm/pkg/errors"
 	"github.com/hanfei1991/microcosm/pkg/p2p"
@@ -29,29 +35,39 @@ type Config struct {
 	DstDir  string `toml:"dstDir" json:"dstDir"`
 }
 
-type workerInfo struct {
-	file   string
-	curLoc int64
-	handle lib.WorkerHandle
+type SyncFileInfo struct {
+	Idx      int    `json:"idx"`
+	Location string `json:"loc"`
 }
 
-type errorInfo struct {
-	info string
+type Status struct {
+	*Config `json:"cfg"`
+
+	FileInfos map[int]*SyncFileInfo `json:"files"`
 }
 
-func (e *errorInfo) Error() string {
-	return e.info
+type WorkerInfo struct {
+	handle     atomic.UnsafePointer // a handler to get information
+	needCreate atomic.Bool
 }
 
 type JobMaster struct {
+	sync.Mutex
+
 	lib.BaseJobMaster
-	syncInfo          *Config
-	syncFilesInfo     map[lib.WorkerID]*workerInfo
+	jobStatus         *Status
+	syncFilesInfo     map[int]*WorkerInfo
 	counter           int64
 	workerID          lib.WorkerID
-	status            lib.WorkerStatusCode
-	filesNum          int
 	statusRateLimiter *rate.Limiter
+
+	launchedWorkers sync.Map
+	statusCode      struct {
+		sync.RWMutex
+		code libModel.WorkerStatusCode
+	}
+	ctx     context.Context
+	clocker clock.Clock
 }
 
 func RegisterWorker() {
@@ -65,81 +81,147 @@ func RegisterWorker() {
 func NewCVSJobMaster(ctx *dcontext.Context, workerID lib.WorkerID, masterID lib.MasterID, conf lib.WorkerConfig) *JobMaster {
 	jm := &JobMaster{}
 	jm.workerID = workerID
-	jm.syncInfo = conf.(*Config)
-	jm.syncFilesInfo = make(map[lib.WorkerID]*workerInfo)
+	jm.jobStatus = &Status{
+		FileInfos: make(map[int]*SyncFileInfo),
+	}
+	jm.jobStatus.Config = conf.(*Config)
+	jm.syncFilesInfo = make(map[int]*WorkerInfo)
 	jm.statusRateLimiter = rate.NewLimiter(rate.Every(time.Second*2), 1)
+	jm.ctx = ctx.Context
+	jm.clocker = clock.New()
 	log.L().Info("new cvs jobmaster ", zap.Any("id :", jm.workerID))
 	return jm
 }
 
-func (jm *JobMaster) InitImpl(ctx context.Context) error {
-	if jm.syncInfo.DstHost == jm.syncInfo.SrcHost && jm.syncInfo.SrcDir == jm.syncInfo.DstDir {
-		return &errorInfo{info: "bad configure file ,make sure the source address is not the same as the destination"}
-	}
+func (jm *JobMaster) InitImpl(ctx context.Context) (err error) {
 	log.L().Info("initializing the cvs jobmaster  ", zap.Any("id :", jm.workerID))
-	jm.status = lib.WorkerStatusInit
-	fileNames, err := jm.listSrcFiles(ctx)
+	jm.setStatusCode(libModel.WorkerStatusInit)
+	filesNum, err := jm.listSrcFiles(ctx)
 	if err != nil {
 		return err
 	}
-	jm.filesNum = len(fileNames)
-	if jm.filesNum == 0 {
-		log.L().Info("no file found under the folder ", zap.Any("message", jm.syncInfo.DstDir))
+	if filesNum == 0 {
+		return errors.New("no file found under the folder")
 	}
-	log.L().Info(" cvs jobmaster list file success", zap.Any("id :", jm.workerID), zap.Any(" file number :", jm.filesNum))
+	log.L().Info("cvs jobmaster list file success", zap.Any("id", jm.workerID), zap.Any("file number", filesNum))
 	// todo: store the jobmaster information into the metastore
-	for _, file := range fileNames {
-		dstDir := jm.syncInfo.DstDir + "/" + file
-		srcDir := jm.syncInfo.SrcDir + "/" + file
-		conf := cvsTask.Config{SrcHost: jm.syncInfo.SrcHost, SrcDir: srcDir, DstHost: jm.syncInfo.DstHost, DstDir: dstDir, StartLoc: 0}
-		workerID, err := jm.CreateWorker(lib.CvsTask, conf, 10 /* TODO add cost */)
-		if err != nil {
-			// todo : handle the error case
-			return err
+	for idx := 0; idx < filesNum; idx++ {
+		jm.jobStatus.FileInfos[idx] = &SyncFileInfo{Idx: idx}
+		jm.syncFilesInfo[idx] = &WorkerInfo{
+			needCreate: *atomic.NewBool(true),
+			handle:     *atomic.NewUnsafePointer(unsafe.Pointer(nil)),
 		}
-		jm.syncFilesInfo[workerID] = &workerInfo{file: file, curLoc: 0, handle: nil}
 	}
-	jm.status = lib.WorkerStatusNormal
-	return jm.UpdateJobStatus(ctx, jm.Status())
+
+	// Then persist the checkpoint for recovery
+	// This persistence has to succeed before we set this master to normal status.
+	statusBytes, err := json.Marshal(jm.jobStatus)
+	if err != nil {
+		return err
+	}
+	_, err = jm.MetaKVClient().Put(ctx, jm.workerID, string(statusBytes))
+	if err != nil {
+		return err
+	}
+	jm.setStatusCode(libModel.WorkerStatusNormal)
+	return nil
 }
 
 func (jm *JobMaster) Tick(ctx context.Context) error {
-	filesNum := 0
 	jm.counter = 0
-	for _, worker := range jm.syncFilesInfo {
-		if worker.handle == nil {
+	if !jm.IsMasterReady() {
+		if jm.statusRateLimiter.Allow() {
+			log.L().Info("jobmaster is not ready", zap.Any("master id", jm.workerID))
+		}
+		return nil
+	}
+
+	jm.Lock()
+	defer jm.Unlock()
+	if 0 == len(jm.jobStatus.FileInfos) {
+		jm.setStatusCode(libModel.WorkerStatusFinished)
+		log.L().Info("cvs job master finished")
+		return jm.BaseJobMaster.Exit(ctx, jm.Status(), nil)
+	}
+	for idx, workerInfo := range jm.syncFilesInfo {
+		// check if need to recreate worker
+		if workerInfo.needCreate.Load() {
+			workerID, err := jm.CreateWorker(lib.CvsTask, getTaskConfig(jm.jobStatus, idx), 10)
+			if err != nil {
+				log.L().Warn("create worker failed, try next time", zap.Any("master id", jm.workerID), zap.Error(err))
+			} else {
+				jm.launchedWorkers.Store(workerID, idx)
+				workerInfo.needCreate.Store(false)
+			}
 			continue
 		}
-		status := worker.handle.Status()
-		if status.Code == lib.WorkerStatusNormal || status.Code == lib.WorkerStatusFinished {
-			num, err := strconv.ParseInt(string(status.ExtBytes), 10, 64)
+
+		// still awaiting online
+		if workerInfo.handle.Load() == nil {
+			continue
+		}
+		// update job status
+		handle := *(*lib.WorkerHandle)(workerInfo.handle.Load())
+		status := handle.Status()
+		switch status.Code {
+		case libModel.WorkerStatusNormal, libModel.WorkerStatusFinished, libModel.WorkerStatusStopped:
+			taskStatus := &cvsTask.Status{}
+			err := json.Unmarshal(status.ExtBytes, taskStatus)
 			if err != nil {
 				return err
 			}
-			worker.curLoc = num
-			jm.counter += num
-			log.L().Debug("cvs job tmp num ", zap.Any("id", worker.handle.ID()), zap.Int64("counter", num), zap.Any("status", status.Code))
-			// todo : store the sync progress into the meta store for each file
-			if status.Code == lib.WorkerStatusFinished {
-				filesNum++
-			}
-		} else if status.Code == lib.WorkerStatusError {
-			log.L().Error("sync file failed ", zap.Any("message", worker.file))
-		} else {
+
+			jm.jobStatus.FileInfos[idx].Location = taskStatus.CurrentLoc
+			jm.counter += taskStatus.Count
+
+			log.L().Debug("cvs job tmp num ", zap.Any("id", idx), zap.Any("status", string(status.ExtBytes)))
+		case libModel.WorkerStatusError:
+			log.L().Error("sync file failed ", zap.Any("idx", idx))
+		default:
 			log.L().Info("worker status abnormal", zap.Any("status", status))
 		}
 	}
 	if jm.statusRateLimiter.Allow() {
-		log.L().Info("cvs job master status", zap.Any("id", jm.workerID), zap.Int64("counter", jm.counter), zap.Any("status", jm.status))
+		statsBytes, err := json.Marshal(jm.jobStatus)
+		if err != nil {
+			log.L().Warn("serialize job status failed, try next time", zap.Any("master id", jm.workerID), zap.Error(err))
+			return err
+		}
+		_, err = jm.MetaKVClient().Put(ctx, jm.workerID, string(statsBytes))
+		if err != nil {
+			log.L().Warn("update job status failed, try next time", zap.Any("master id", jm.workerID), zap.Error(err))
+		}
+		log.L().Info("cvs job master status", zap.Any("id", jm.workerID), zap.Int64("counter", jm.counter), zap.Any("status", jm.getStatusCode()))
 	}
-	if filesNum == jm.filesNum {
-		log.L().Info("cvs job master finished")
+	if jm.getStatusCode() == libModel.WorkerStatusStopped {
+		log.L().Info("cvs job master stopped")
 		return jm.BaseJobMaster.Exit(ctx, jm.Status(), nil)
 	}
 	return nil
 }
 
-func (jm *JobMaster) OnMasterRecovered(ctx context.Context) error {
+func (jm *JobMaster) OnMasterRecovered(ctx context.Context) (err error) {
+	log.L().Info("recovering job master", zap.Any("id", jm.ID()))
+	// load self status
+	resp, err := jm.MetaKVClient().Get(ctx, jm.workerID)
+	if err != nil {
+		log.L().Warn("load status failed", zap.Any("master id", jm.ID), zap.Error(err))
+		return err
+	}
+	if len(resp.Kvs) != 1 {
+		log.L().Error("jobmaster meta unexpected result", zap.Any("master id", jm.ID()), zap.Any("meta counts", len(resp.Kvs)))
+	}
+	statusBytes := resp.Kvs[0].Value
+	log.L().Info("jobmaster recover from meta", zap.Any("master id", jm.ID()), zap.String("status", string(statusBytes)))
+	err = json.Unmarshal(statusBytes, jm.jobStatus)
+	if err != nil {
+		return err
+	}
+	for id := range jm.jobStatus.FileInfos {
+		info := &WorkerInfo{}
+		info.needCreate.Store(true)
+		jm.syncFilesInfo[id] = info
+	}
 	return nil
 }
 
@@ -148,45 +230,70 @@ func (jm *JobMaster) OnWorkerDispatched(worker lib.WorkerHandle, result error) e
 }
 
 func (jm *JobMaster) OnWorkerOnline(worker lib.WorkerHandle) error {
-	// todo : add the worker information to the sync files map
-	syncInfo, exist := jm.syncFilesInfo[worker.ID()]
+	id, exist := jm.launchedWorkers.Load(worker.ID())
 	if !exist {
-		log.L().Panic("bad worker found", zap.Any("message", worker.ID()))
+		log.L().Info("job master recovering and get new worker", zap.Any("id", worker.ID()), zap.Any("master id", jm.ID()))
+		if jm.IsMasterReady() {
+			log.L().Panic("job master has ready and a new worker has been created, brain split occurs!")
+		}
+		statusBytes := worker.Status().ExtBytes
+		status := cvsTask.Status{}
+		err := json.Unmarshal(statusBytes, &status)
+		if err != nil {
+			// bad json
+			return err
+		}
+		id = status.TaskConfig.Idx
 	} else {
-		log.L().Info("worker online ", zap.Any("fileName", syncInfo.file))
+		log.L().Info("worker online ", zap.Any("id", worker.ID()), zap.Any("master id", jm.ID()))
 	}
-	syncInfo.handle = worker
+	jm.Lock()
+	defer jm.Unlock()
+	jm.syncFilesInfo[id.(int)].handle.Store(unsafe.Pointer(&worker))
+	jm.syncFilesInfo[id.(int)].needCreate.Store(false)
+	jm.launchedWorkers.Store(worker.ID(), id.(int))
 	return nil
 }
 
-func (jm *JobMaster) OnWorkerOffline(worker lib.WorkerHandle, reason error) error {
-	syncInfo, exist := jm.syncFilesInfo[worker.ID()]
-	log.L().Info("on worker offline ", zap.Any(" worker :", worker.ID()))
-	if !exist {
-		log.L().Panic("bad worker found", zap.Any("message", worker.ID()))
+func getTaskConfig(jobStatus *Status, id int) *cvsTask.Config {
+	return &cvsTask.Config{
+		SrcHost:  jobStatus.SrcHost,
+		DstHost:  jobStatus.DstHost,
+		DstDir:   jobStatus.DstDir,
+		StartLoc: jobStatus.FileInfos[id].Location,
+		Idx:      id,
 	}
-	// Force to set worker handle, in case of worker finishes before OnWorkerOnline
-	// is fired and worker handle is missing
-	syncInfo.handle = worker
-	if derrors.ErrWorkerFinish.Equal(reason) {
-		log.L().Info("worker finished", zap.String("worker-id", worker.ID()), zap.Any("status", worker.Status()))
-		return nil
-	}
-	var err error
-	dstDir := jm.syncInfo.DstDir + "/" + syncInfo.file
-	srcDir := jm.syncInfo.SrcDir + "/" + syncInfo.file
-	conf := cvsTask.Config{SrcHost: jm.syncInfo.SrcHost, SrcDir: srcDir, DstHost: jm.syncInfo.DstHost, DstDir: dstDir, StartLoc: syncInfo.curLoc}
-	workerID, err := jm.CreateWorker(lib.CvsTask, conf, 10)
-	if err != nil {
-		log.L().Info("create worker failed ", zap.String(" information :", err.Error()))
-	}
-	delete(jm.syncFilesInfo, worker.ID())
-	// todo : if the worker id is empty ,the sync file will be lost.
-	jm.syncFilesInfo[workerID] = &workerInfo{file: syncInfo.file, curLoc: syncInfo.curLoc, handle: nil}
-	return err
 }
 
-func (jm *JobMaster) OnWorkerMessage(worker lib.WorkerHandle, topic p2p.Topic, message interface{}) error {
+// When offline, we should:
+// 1. remove this file from map cache
+// 2. update checkpoint, but note that this operation might fail.
+func (jm *JobMaster) OnWorkerOffline(worker lib.WorkerHandle, reason error) error {
+	val, exist := jm.launchedWorkers.Load(worker.ID())
+	log.L().Info("on worker offline ", zap.Any("worker", worker.ID()))
+	if !exist {
+		log.L().Panic("offline worker not found", zap.Any("worker", worker.ID()))
+	}
+	jm.launchedWorkers.Delete(worker.ID())
+	id := val.(int)
+	jm.Lock()
+	defer jm.Unlock()
+	if derrors.ErrWorkerFinish.Equal(reason) {
+		delete(jm.syncFilesInfo, id)
+		delete(jm.jobStatus.FileInfos, id)
+		log.L().Info("worker finished", zap.String("worker-id", worker.ID()), zap.Any("status", worker.Status()), zap.Error(reason))
+		return nil
+	}
+	jm.syncFilesInfo[id].needCreate.Store(true)
+	jm.syncFilesInfo[id].handle.Store(nil)
+	return nil
+}
+
+func (jm *JobMaster) OnWorkerStatusUpdated(worker lib.WorkerHandle, newStatus *libModel.WorkerStatus) error {
+	return nil
+}
+
+func (jm *JobMaster) OnWorkerMessage(worker lib.WorkerHandle, topic p2p.Topic, message p2p.MessageValue) error {
 	return nil
 }
 
@@ -207,15 +314,63 @@ func (jm *JobMaster) OnMasterFailover(reason lib.MasterFailoverReason) error {
 	return nil
 }
 
+func (jm *JobMaster) OnMasterMessage(topic p2p.Topic, message p2p.MessageValue) error {
+	return nil
+}
+
 func (jm *JobMaster) OnJobManagerFailover(reason lib.MasterFailoverReason) error {
 	log.L().Info("cvs jobmaster: OnJobManagerFailover", zap.Any("reason", reason))
 	return nil
 }
 
-func (jm *JobMaster) Status() lib.WorkerStatus {
-	return lib.WorkerStatus{
-		Code:     jm.status,
-		ExtBytes: []byte(fmt.Sprintf("%d", jm.counter)),
+func (jm *JobMaster) OnJobManagerMessage(topic p2p.Topic, message p2p.MessageValue) error {
+	log.L().Info("cvs jobmaster: OnJobManagerMessage", zap.Any("message", message))
+	jm.Lock()
+	defer jm.Unlock()
+	switch msg := message.(type) {
+	case *lib.StatusChangeRequest:
+		switch msg.ExpectState {
+		case libModel.WorkerStatusStopped:
+			jm.setStatusCode(libModel.WorkerStatusStopped)
+			for _, worker := range jm.syncFilesInfo {
+				if worker.handle.Load() == nil {
+					continue
+				}
+				handle := *(*lib.WorkerHandle)(worker.handle.Load())
+
+				wTopic := lib.WorkerStatusChangeRequestTopic(jm.BaseJobMaster.ID(), handle.ID())
+				wMessage := &lib.StatusChangeRequest{
+					SendTime:     jm.clocker.Mono(),
+					FromMasterID: jm.BaseJobMaster.ID(),
+					Epoch:        jm.BaseJobMaster.CurrentEpoch(),
+					ExpectState:  libModel.WorkerStatusStopped,
+				}
+				ctx, cancel := context.WithTimeout(jm.ctx, time.Second*2)
+				if err := handle.SendMessage(ctx, wTopic, wMessage, false /*nonblocking*/); err != nil {
+					cancel()
+					return err
+				}
+				log.L().Info("sent message to worker", zap.String("topic", topic), zap.Any("message", wMessage))
+				cancel()
+			}
+		default:
+			log.L().Info("FakeMaster: ignore status change state", zap.Int32("state", int32(msg.ExpectState)))
+		}
+	default:
+		log.L().Info("unsupported message", zap.Any("message", message))
+	}
+
+	return nil
+}
+
+func (jm *JobMaster) Status() libModel.WorkerStatus {
+	status, err := json.Marshal(jm.jobStatus)
+	if err != nil {
+		log.L().Panic("get status failed", zap.String("id", jm.workerID), zap.Error(err))
+	}
+	return libModel.WorkerStatus{
+		Code:     jm.getStatusCode(),
+		ExtBytes: status,
 	}
 }
 
@@ -223,18 +378,30 @@ func (jm *JobMaster) IsJobMasterImpl() {
 	panic("unreachable")
 }
 
-func (jm *JobMaster) listSrcFiles(ctx context.Context) ([]string, error) {
-	conn, err := grpc.Dial(jm.syncInfo.SrcHost, grpc.WithInsecure())
+func (jm *JobMaster) listSrcFiles(ctx context.Context) (int, error) {
+	conn, err := grpc.Dial(jm.jobStatus.SrcHost, grpc.WithInsecure())
 	if err != nil {
-		log.L().Info("cann't connect with the host  ", zap.Any("message", jm.syncInfo.SrcHost))
-		return []string{}, err
+		log.L().Info("cann't connect with the host  ", zap.Any("message", jm.jobStatus.SrcHost))
+		return -1, err
 	}
 	client := pb.NewDataRWServiceClient(conn)
 	defer conn.Close()
-	reply, err := client.ListFiles(ctx, &pb.ListFilesReq{FolderName: jm.syncInfo.SrcDir})
+	reply, err := client.ListFiles(ctx, &pb.ListFilesReq{})
 	if err != nil {
-		log.L().Info(" list the directory failed ", zap.String("dir", jm.syncInfo.SrcDir), zap.Error(err))
-		return []string{}, err
+		log.L().Info(" list the directory failed ", zap.String("id", jm.ID()), zap.Error(err))
+		return -1, err
 	}
-	return reply.GetFileNames(), nil
+	return int(reply.FileNum), nil
+}
+
+func (jm *JobMaster) setStatusCode(code libModel.WorkerStatusCode) {
+	jm.statusCode.Lock()
+	defer jm.statusCode.Unlock()
+	jm.statusCode.code = code
+}
+
+func (jm *JobMaster) getStatusCode() libModel.WorkerStatusCode {
+	jm.statusCode.RLock()
+	defer jm.statusCode.RUnlock()
+	return jm.statusCode.code
 }

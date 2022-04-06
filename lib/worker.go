@@ -12,13 +12,19 @@ import (
 	"go.uber.org/zap"
 
 	runtime "github.com/hanfei1991/microcosm/executor/worker"
+	libModel "github.com/hanfei1991/microcosm/lib/model"
+	"github.com/hanfei1991/microcosm/lib/statusutil"
 	"github.com/hanfei1991/microcosm/model"
 	"github.com/hanfei1991/microcosm/pkg/clock"
 	dcontext "github.com/hanfei1991/microcosm/pkg/context"
 	derror "github.com/hanfei1991/microcosm/pkg/errors"
-	"github.com/hanfei1991/microcosm/pkg/metadata"
+	"github.com/hanfei1991/microcosm/pkg/externalresource/broker"
+	"github.com/hanfei1991/microcosm/pkg/externalresource/resourcemeta"
+	extKV "github.com/hanfei1991/microcosm/pkg/meta/extension"
+	"github.com/hanfei1991/microcosm/pkg/meta/kvclient"
+	"github.com/hanfei1991/microcosm/pkg/meta/metaclient"
 	"github.com/hanfei1991/microcosm/pkg/p2p"
-	"github.com/hanfei1991/microcosm/pkg/resource"
+	"github.com/hanfei1991/microcosm/pkg/tenant"
 )
 
 type Worker interface {
@@ -47,6 +53,9 @@ type WorkerImpl interface {
 	// OnMasterFailover is called when the master is failed over.
 	OnMasterFailover(reason MasterFailoverReason) error
 
+	// OnMasterMessage is called when worker receives master message
+	OnMasterMessage(topic p2p.Topic, message p2p.MessageValue) error
+
 	// CloseImpl tells the WorkerImpl to quit running StatusWorker and release resources.
 	CloseImpl(ctx context.Context) error
 }
@@ -57,15 +66,14 @@ type BaseWorker interface {
 	Poll(ctx context.Context) error
 	Close(ctx context.Context) error
 	ID() runtime.RunnableID
-	MetaKVClient() metadata.MetaKV
-	UpdateStatus(ctx context.Context, status WorkerStatus) error
+	MetaKVClient() metaclient.KVClient
+	UpdateStatus(ctx context.Context, status libModel.WorkerStatus) error
 	SendMessage(ctx context.Context, topic p2p.Topic, message interface{}) (bool, error)
-	Resource() resource.Proxy
-	// Exit should be called when worker (in user logic) wants to exit
-	// - If err is nil, it means worker exits normally
-	// - If err is not nil, it means worker meets error, and after worker exits
-	//   it will be failover.
-	Exit(ctx context.Context, status WorkerStatus, err error) error
+	OpenStorage(ctx context.Context, resourcePath resourcemeta.ResourceID) (broker.Handle, error)
+	// Exit should be called when worker (in user logic) wants to exit.
+	// When `err` is not nil, the status code is assigned WorkerStatusError.
+	// Otherwise worker should set its status code to a meaningful value.
+	Exit(ctx context.Context, status libModel.WorkerStatus, err error) error
 }
 
 type DefaultBaseWorker struct {
@@ -73,14 +81,18 @@ type DefaultBaseWorker struct {
 
 	messageHandlerManager p2p.MessageHandlerManager
 	messageSender         p2p.MessageSender
-	metaKVClient          metadata.MetaKV
-	resourceProxy         resource.Proxy
+	// framework metastore prefix kvclient
+	metaKVClient metaclient.KVClient
+	// user metastore raw kvclient
+	userRawKVClient extKV.KVClientEx
+	resourceBroker  broker.Broker
 
 	masterClient *masterClient
 	masterID     MasterID
 
 	workerMetaClient *WorkerMetadataClient
-	statusSender     *StatusSender
+	statusSender     *statusutil.Writer
+	messageRouter    *MessageRouter
 
 	id            WorkerID
 	timeoutConfig TimeoutConfig
@@ -95,6 +107,10 @@ type DefaultBaseWorker struct {
 	cancelPool    context.CancelFunc
 
 	clock clock.Clock
+
+	// user metastore prefix kvclient
+	// Don't close it. It's just a prefix wrapper for underlying userRawKVClient
+	userMetaKVClient metaclient.KVClient
 }
 
 type workerParams struct {
@@ -102,8 +118,9 @@ type workerParams struct {
 
 	MessageHandlerManager p2p.MessageHandlerManager
 	MessageSender         p2p.MessageSender
-	MetaKVClient          metadata.MetaKV
-	ResourceProxy         resource.Proxy
+	MetaKVClient          metaclient.KVClient
+	UserRawKVClient       extKV.KVClientEx
+	ResourceBroker        broker.Broker
 }
 
 func NewBaseWorker(
@@ -123,7 +140,8 @@ func NewBaseWorker(
 		messageHandlerManager: params.MessageHandlerManager,
 		messageSender:         params.MessageSender,
 		metaKVClient:          params.MetaKVClient,
-		resourceProxy:         params.ResourceProxy,
+		userRawKVClient:       params.UserRawKVClient,
+		resourceBroker:        params.ResourceBroker,
 
 		masterID:      masterID,
 		id:            workerID,
@@ -133,6 +151,8 @@ func NewBaseWorker(
 
 		errCh: make(chan error, 1),
 		clock: clock.New(),
+		// [TODO] use tenantID if support multi-tenant
+		userMetaKVClient: kvclient.NewPrefixKVClient(params.UserRawKVClient, tenant.DefaultUserTenantID),
 	}
 }
 
@@ -187,7 +207,13 @@ func (w *DefaultBaseWorker) doPreInit(ctx context.Context) error {
 
 	w.workerMetaClient = NewWorkerMetadataClient(w.masterID, w.metaKVClient)
 
-	w.statusSender = NewStatusSender(w.id, w.masterClient, w.workerMetaClient, w.messageSender, w.pool)
+	w.statusSender = statusutil.NewWriter(
+		w.metaKVClient, w.messageSender, w.masterClient, w.id)
+	w.messageRouter = NewMessageRouter(w.id, w.pool, defaultMessageRouterBufferSize,
+		func(topic p2p.Topic, msg p2p.MessageValue) error {
+			return w.Impl.OnMasterMessage(topic, msg)
+		},
+	)
 
 	if err := w.initMessageHandlers(ctx); err != nil {
 		return errors.Trace(err)
@@ -201,9 +227,8 @@ func (w *DefaultBaseWorker) doPreInit(ctx context.Context) error {
 }
 
 func (w *DefaultBaseWorker) doPostInit(ctx context.Context) error {
-	if err := w.UpdateStatus(ctx, WorkerStatus{
-		Code: WorkerStatusInit,
-	}); err != nil {
+	if err := w.statusSender.UpdateStatus(
+		ctx, &libModel.WorkerStatus{Code: libModel.WorkerStatusInit}); err != nil {
 		return errors.Trace(err)
 	}
 
@@ -224,7 +249,7 @@ func (w *DefaultBaseWorker) doPoll(ctx context.Context) error {
 	default:
 	}
 
-	if err := w.statusSender.Tick(ctx); err != nil {
+	if err := w.messageRouter.Tick(ctx); err != nil {
 		return errors.Trace(err)
 	}
 
@@ -277,25 +302,21 @@ func (w *DefaultBaseWorker) ID() runtime.RunnableID {
 	return w.id
 }
 
-func (w *DefaultBaseWorker) MetaKVClient() metadata.MetaKV {
-	return w.metaKVClient
+func (w *DefaultBaseWorker) MetaKVClient() metaclient.KVClient {
+	return w.userMetaKVClient
 }
 
-func (w *DefaultBaseWorker) UpdateStatus(ctx context.Context, status WorkerStatus) error {
-	err := w.statusSender.SendStatus(ctx, status)
+// UpdateStatus updates the worker's status and tries to notify the master.
+// The status is persisted if Code or ErrorMessage has changed. Refer to (*WorkerStatus).HasSignificantChange.
+//
+// If UpdateStatus returns without an error, then the status must have been persisted,
+// but there is no guarantee that the master has received a notification.
+// Note that if the master cannot handle the notifications fast enough, notifications
+// can be lost.
+func (w *DefaultBaseWorker) UpdateStatus(ctx context.Context, status libModel.WorkerStatus) error {
+	err := w.statusSender.UpdateStatus(ctx, &status)
 	if err != nil {
 		return errors.Trace(err)
-	}
-	return nil
-}
-
-// safeUpdateStatus is used when worker exits, it first stores worker status
-// into metastore, and then tries to send status to master. We store status first
-// because SendStatus could fail when pending status exits.
-func (w *DefaultBaseWorker) safeUpdateStatus(ctx context.Context, status WorkerStatus) error {
-	err := w.statusSender.SafeSendStatus(ctx, status)
-	if err != nil && derror.ErrWorkerUpdateStatusTryAgain.NotEqual(err) {
-		return err
 	}
 	return nil
 }
@@ -308,21 +329,16 @@ func (w *DefaultBaseWorker) SendMessage(
 	return w.messageSender.SendToNode(ctx, w.masterClient.MasterNode(), topic, message)
 }
 
-func (w *DefaultBaseWorker) Resource() resource.Proxy {
-	return w.resourceProxy
+func (w *DefaultBaseWorker) OpenStorage(ctx context.Context, resourcePath resourcemeta.ResourceID) (broker.Handle, error) {
+	return w.resourceBroker.OpenStorage(ctx, w.id, w.masterID, resourcePath)
 }
 
-func (w *DefaultBaseWorker) Exit(ctx context.Context, status WorkerStatus, err error) error {
+func (w *DefaultBaseWorker) Exit(ctx context.Context, status libModel.WorkerStatus, err error) error {
 	if err != nil {
-		status.Code = WorkerStatusError
-		if err1 := w.safeUpdateStatus(ctx, status); err1 != nil {
-			return err1
-		}
-		return err
+		status.Code = libModel.WorkerStatusError
 	}
 
-	status.Code = WorkerStatusFinished
-	if err1 := w.safeUpdateStatus(ctx, status); err1 != nil {
+	if err1 := w.statusSender.UpdateStatus(ctx, &status); err1 != nil {
 		return err1
 	}
 
@@ -386,7 +402,16 @@ func (w *DefaultBaseWorker) runWatchDog(ctx context.Context) error {
 	}
 }
 
-func (w *DefaultBaseWorker) initMessageHandlers(ctx context.Context) error {
+func (w *DefaultBaseWorker) initMessageHandlers(ctx context.Context) (retErr error) {
+	defer func() {
+		if retErr != nil {
+			if err := w.messageHandlerManager.Clean(context.Background()); err != nil {
+				log.L().Warn("Failed to clean up message handlers",
+					zap.String("master-id", w.masterID),
+					zap.String("worker-id", w.id))
+			}
+		}
+	}()
 	topic := HeartbeatPongTopic(w.masterClient.MasterID(), w.id)
 	ok, err := w.messageHandlerManager.RegisterHandler(
 		ctx,
@@ -406,6 +431,27 @@ func (w *DefaultBaseWorker) initMessageHandlers(ctx context.Context) error {
 		log.L().Panic("duplicate handler",
 			zap.String("topic", topic))
 	}
+
+	topic = WorkerStatusChangeRequestTopic(w.masterID, w.id)
+	ok, err = w.messageHandlerManager.RegisterHandler(
+		ctx,
+		topic,
+		&StatusChangeRequest{},
+		func(sender p2p.NodeID, value p2p.MessageValue) error {
+			msg, ok := value.(*StatusChangeRequest)
+			if !ok {
+				return derror.ErrInvalidMasterMessage.GenWithStackByArgs(value)
+			}
+			w.messageRouter.AppendMessage(topic, msg)
+			return nil
+		})
+	if err != nil {
+		return errors.Trace(err)
+	}
+	if !ok {
+		log.L().Panic("duplicate handler", zap.String("topic", topic))
+	}
+
 	return nil
 }
 
@@ -425,7 +471,7 @@ type masterClient struct {
 	workerID WorkerID
 
 	messageSender           p2p.MessageSender
-	metaKVClient            metadata.MetaKV
+	metaKVClient            metaclient.KVClient
 	lastMasterAckedPingTime clock.MonotonicTime
 
 	timeoutConfig TimeoutConfig
@@ -437,7 +483,7 @@ func newMasterClient(
 	masterID MasterID,
 	workerID WorkerID,
 	messageRouter p2p.MessageSender,
-	metaKV metadata.MetaKV,
+	metaKV metaclient.KVClient,
 	initTime clock.MonotonicTime,
 	onMasterFailOver func() error,
 ) *masterClient {

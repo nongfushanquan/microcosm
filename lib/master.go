@@ -17,15 +17,20 @@ import (
 
 	"github.com/hanfei1991/microcosm/client"
 	runtime "github.com/hanfei1991/microcosm/executor/worker"
-	"github.com/hanfei1991/microcosm/lib/quota"
+	libModel "github.com/hanfei1991/microcosm/lib/model"
+	"github.com/hanfei1991/microcosm/lib/statusutil"
 	"github.com/hanfei1991/microcosm/model"
 	"github.com/hanfei1991/microcosm/pb"
 	"github.com/hanfei1991/microcosm/pkg/clock"
 	dcontext "github.com/hanfei1991/microcosm/pkg/context"
 	"github.com/hanfei1991/microcosm/pkg/deps"
 	derror "github.com/hanfei1991/microcosm/pkg/errors"
-	"github.com/hanfei1991/microcosm/pkg/metadata"
+	extKV "github.com/hanfei1991/microcosm/pkg/meta/extension"
+	"github.com/hanfei1991/microcosm/pkg/meta/kvclient"
+	"github.com/hanfei1991/microcosm/pkg/meta/metaclient"
 	"github.com/hanfei1991/microcosm/pkg/p2p"
+	"github.com/hanfei1991/microcosm/pkg/quota"
+	"github.com/hanfei1991/microcosm/pkg/tenant"
 	"github.com/hanfei1991/microcosm/pkg/uuid"
 )
 
@@ -54,22 +59,27 @@ type MasterImpl interface {
 	OnWorkerOnline(worker WorkerHandle) error
 
 	// OnWorkerOffline is called when a worker exits or has timed out.
+	// Worker exit scenario contains normal finish and manually stop
 	OnWorkerOffline(worker WorkerHandle, reason error) error
 
 	// OnWorkerMessage is called when a customized message is received.
 	OnWorkerMessage(worker WorkerHandle, topic p2p.Topic, message interface{}) error
+
+	OnWorkerStatusUpdated(worker WorkerHandle, newStatus *libModel.WorkerStatus) error
 
 	// CloseImpl is called when the master is being closed
 	CloseImpl(ctx context.Context) error
 }
 
 const (
-	createWorkerTimeout        = 10 * time.Second
-	maxCreateWorkerConcurrency = 100
+	createWorkerWaitQuotaTimeout = 5 * time.Second
+	createWorkerTimeout          = 10 * time.Second
+	maxCreateWorkerConcurrency   = 100
 )
 
 type BaseMaster interface {
-	MetaKVClient() metadata.MetaKV
+	// MetaKVClient return user metastore kv client
+	MetaKVClient() metaclient.KVClient
 	Init(ctx context.Context) error
 	Poll(ctx context.Context) error
 	MasterMeta() *MasterMetaKVData
@@ -88,7 +98,10 @@ type DefaultBaseMaster struct {
 	// dependencies
 	messageHandlerManager p2p.MessageHandlerManager
 	messageSender         p2p.MessageSender
-	metaKVClient          metadata.MetaKV
+	// framework metastore prefix kvclient
+	metaKVClient metaclient.KVClient
+	// user metastore raw kvclient
+	userRawKVClient       extKV.KVClientEx
 	executorClientManager client.ClientsManager
 	serverMasterClient    client.MasterClient
 	pool                  workerpool.AsyncPool
@@ -113,6 +126,10 @@ type DefaultBaseMaster struct {
 	timeoutConfig TimeoutConfig
 	masterMeta    *MasterMetaKVData
 
+	// user metastore prefix kvclient
+	// Don't close it. It's just a prefix wrapper for underlying userRawKVClient
+	userMetaKVClient metaclient.KVClient
+
 	// components for easier unit testing
 	uuidGen uuid.Generator
 
@@ -128,7 +145,10 @@ type masterParams struct {
 
 	MessageHandlerManager p2p.MessageHandlerManager
 	MessageSender         p2p.MessageSender
-	MetaKVClient          metadata.MetaKV
+	// framework metastore prefix kvclient
+	MetaKVClient metaclient.KVClient
+	// user metastore raw kvclient
+	UserRawKVClient       extKV.KVClientEx
 	ExecutorClientManager client.ClientsManager
 	ServerMasterClient    client.MasterClient
 }
@@ -148,7 +168,7 @@ func NewBaseMaster(
 		nodeID = ctx.Environ.NodeID
 		advertiseAddr = ctx.Environ.Addr
 		metaBytes := ctx.Environ.MasterMetaBytes
-		err := masterMeta.Unmarshal(metaBytes)
+		err := errors.Trace(masterMeta.Unmarshal(metaBytes))
 		if err != nil {
 			log.L().Warn("invalid master meta", zap.ByteString("data", metaBytes), zap.Error(err))
 		}
@@ -164,6 +184,7 @@ func NewBaseMaster(
 		messageHandlerManager: params.MessageHandlerManager,
 		messageSender:         params.MessageSender,
 		metaKVClient:          params.MetaKVClient,
+		userRawKVClient:       params.UserRawKVClient,
 		executorClientManager: params.ExecutorClientManager,
 		serverMasterClient:    params.ServerMasterClient,
 		pool:                  workerpool.NewDefaultAsyncPool(4),
@@ -182,12 +203,14 @@ func NewBaseMaster(
 		advertiseAddr: advertiseAddr,
 
 		createWorkerQuota: quota.NewConcurrencyQuota(maxCreateWorkerConcurrency),
-		deps:              ctx.Deps(),
+		// [TODO] use tenantID if support muliti-tenant
+		userMetaKVClient: kvclient.NewPrefixKVClient(params.UserRawKVClient, tenant.DefaultUserTenantID),
+		deps:             ctx.Deps(),
 	}
 }
 
-func (m *DefaultBaseMaster) MetaKVClient() metadata.MetaKV {
-	return m.metaKVClient
+func (m *DefaultBaseMaster) MetaKVClient() metaclient.KVClient {
+	return m.userMetaKVClient
 }
 
 func (m *DefaultBaseMaster) Init(ctx context.Context) error {
@@ -213,10 +236,6 @@ func (m *DefaultBaseMaster) Init(ctx context.Context) error {
 }
 
 func (m *DefaultBaseMaster) doInit(ctx context.Context) (isFirstStartUp bool, err error) {
-	if err := m.registerMessageHandlers(ctx); err != nil {
-		return false, errors.Trace(err)
-	}
-
 	isInit, epoch, err := m.refreshMetadata(ctx)
 	if err != nil {
 		return false, errors.Trace(err)
@@ -237,6 +256,10 @@ func (m *DefaultBaseMaster) doInit(ctx context.Context) (isFirstStartUp bool, er
 		!isInit,
 		epoch,
 		&m.timeoutConfig)
+
+	if err := m.registerMessageHandlers(ctx); err != nil {
+		return false, errors.Trace(err)
+	}
 
 	m.startBackgroundTasks()
 	return isInit, nil
@@ -263,10 +286,10 @@ func (m *DefaultBaseMaster) registerMessageHandlers(ctx context.Context) error {
 
 	ok, err = m.messageHandlerManager.RegisterHandler(
 		ctx,
-		WorkerStatusUpdatedTopic(m.id),
-		&WorkerStatusUpdatedMessage{},
+		statusutil.WorkerStatusTopic(m.id),
+		&statusutil.WorkerStatusMessage{},
 		func(sender p2p.NodeID, value p2p.MessageValue) error {
-			msg := value.(*WorkerStatusUpdatedMessage)
+			msg := value.(*statusutil.WorkerStatusMessage)
 			m.workerManager.OnWorkerStatusUpdated(msg)
 			return nil
 		})
@@ -274,8 +297,9 @@ func (m *DefaultBaseMaster) registerMessageHandlers(ctx context.Context) error {
 		return err
 	}
 	if !ok {
-		log.L().Panic("duplicate handler", zap.String("topic", WorkerStatusUpdatedTopic(m.id)))
+		log.L().Panic("duplicate handler", zap.String("topic", statusutil.WorkerStatusTopic(m.id)))
 	}
+
 	return nil
 }
 
@@ -306,9 +330,11 @@ func (m *DefaultBaseMaster) doPoll(ctx context.Context) error {
 		return errors.Trace(err)
 	}
 
-	if err := m.workerManager.CheckStatusUpdate(ctx); err != nil {
-		return errors.Trace(err)
+	err := m.workerManager.CheckStatusUpdate(m.Impl.OnWorkerStatusUpdated)
+	if err != nil {
+		return err
 	}
+
 	return nil
 }
 
@@ -384,7 +410,7 @@ func (m *DefaultBaseMaster) runWorkerCheck(ctx context.Context) error {
 		// It is logical to call `OnWorkerOnline` first and then call `OnWorkerOffline`.
 		// In case that these two events for the same worker is detected in the same tick.
 		for _, workerInfo := range onlinedWorkers {
-			log.L().Info("worker is online", zap.Any("worker-info", workerInfo))
+			log.L().Info("worker is online", zap.Any("master-id", m.id), zap.Any("worker-info", workerInfo))
 
 			handle := m.workerManager.GetWorkerHandle(workerInfo.ID)
 			err := m.Impl.OnWorkerOnline(handle)
@@ -394,7 +420,6 @@ func (m *DefaultBaseMaster) runWorkerCheck(ctx context.Context) error {
 		}
 
 		for _, workerInfo := range offlinedWorkers {
-			log.L().Info("worker is offline", zap.Any("worker-info", workerInfo))
 			status, ok := m.workerManager.GetStatus(workerInfo.ID)
 			if !ok {
 				log.L().Panic(
@@ -402,11 +427,15 @@ func (m *DefaultBaseMaster) runWorkerCheck(ctx context.Context) error {
 					zap.Any("worker-info", workerInfo),
 				)
 			}
+			log.L().Info("worker is offline", zap.Any("master-id", m.id), zap.Any("worker-info", workerInfo), zap.Any("worker-status", status))
 			tombstoneHandle := NewTombstoneWorkerHandle(workerInfo.ID, *status, nil)
 			var offlineError error
-			if status.Code == WorkerStatusFinished {
+			switch status.Code {
+			case libModel.WorkerStatusFinished:
 				offlineError = derror.ErrWorkerFinish.FastGenByArgs()
-			} else {
+			case libModel.WorkerStatusStopped:
+				offlineError = derror.ErrWorkerStop.FastGenByArgs()
+			default:
 				offlineError = derror.ErrWorkerOffline.FastGenByArgs(workerInfo.ID)
 			}
 
@@ -421,7 +450,7 @@ func (m *DefaultBaseMaster) runWorkerCheck(ctx context.Context) error {
 func (m *DefaultBaseMaster) OnError(err error) {
 	if errors.Cause(err) == context.Canceled {
 		// TODO think about how to gracefully handle cancellation here.
-		log.L().Warn("BaseMaster is being canceled", zap.Error(err))
+		log.L().Warn("BaseMaster is being canceled", zap.String("id", m.id), zap.Error(err))
 		return
 	}
 	select {
@@ -430,6 +459,7 @@ func (m *DefaultBaseMaster) OnError(err error) {
 	}
 }
 
+// refreshMetadata load and update metadata by current epoch, nodeID, advertiseAddr, etc.
 // master meta is persisted before it is created, in this function we update some
 // fileds to the current value, including epoch, nodeID and advertiseAddr.
 func (m *DefaultBaseMaster) refreshMetadata(ctx context.Context) (isInit bool, epoch Epoch, err error) {
@@ -440,15 +470,15 @@ func (m *DefaultBaseMaster) refreshMetadata(ctx context.Context) (isInit bool, e
 		return false, 0, err
 	}
 
-	epoch, err = metaClient.GenerateEpoch(ctx)
+	epoch, err = m.metaKVClient.GenEpoch(ctx)
 	if err != nil {
-		return false, 0, errors.Trace(err)
+		return false, 0, err
 	}
 
 	// We should update the master data to reflect our current information
+	masterMeta.Epoch = epoch
 	masterMeta.Addr = m.advertiseAddr
 	masterMeta.NodeID = m.nodeID
-	masterMeta.Epoch = epoch
 
 	if err := metaClient.Store(ctx, masterMeta); err != nil {
 		return false, 0, errors.Trace(err)
@@ -481,7 +511,7 @@ func (m *DefaultBaseMaster) markStatusCodeInMetadata(
 //   marshal it to byte slice as returned config, and generate a random WorkerID.
 func (m *DefaultBaseMaster) prepareWorkerConfig(
 	workerType WorkerType, config WorkerConfig,
-) (rawConfig []byte, workerID string, err error) {
+) (rawConfig []byte, workerID WorkerID, err error) {
 	switch workerType {
 	case CvsJobMaster, FakeJobMaster, DMJobMaster:
 		masterMeta, ok := config.(*MasterMetaKVData)
@@ -512,10 +542,13 @@ func (m *DefaultBaseMaster) prepareWorkerConfig(
 func (m *DefaultBaseMaster) CreateWorker(workerType WorkerType, config WorkerConfig, cost model.RescUnit) (WorkerID, error) {
 	log.L().Info("CreateWorker",
 		zap.Int64("worker-type", int64(workerType)),
-		zap.Any("worker-config", config))
+		zap.Any("worker-config", config),
+		zap.String("master-id", m.id))
 
-	if !m.createWorkerQuota.TryConsume() {
-		return "", derror.ErrMasterConcurrencyExceeded.GenWithStackByArgs()
+	quotaCtx, cancel := context.WithTimeout(context.Background(), createWorkerWaitQuotaTimeout)
+	defer cancel()
+	if err := m.createWorkerQuota.Consume(quotaCtx); err != nil {
+		return "", derror.ErrMasterConcurrencyExceeded.Wrap(err)
 	}
 
 	configBytes, workerID, err := m.prepareWorkerConfig(workerType, config)
@@ -535,7 +568,7 @@ func (m *DefaultBaseMaster) CreateWorker(workerType WorkerType, config WorkerCon
 		// When CreateWorker failed, we need to pass the worker id to
 		// OnWorkerDispatched, so we use a dummy WorkerHandle.
 		dispatchFailedDummyHandler := NewTombstoneWorkerHandle(
-			workerID, WorkerStatus{Code: WorkerStatusError}, nil)
+			workerID, libModel.WorkerStatus{Code: libModel.WorkerStatusError}, nil)
 		requestCtx, cancel := context.WithTimeout(context.Background(), createWorkerTimeout)
 		defer cancel()
 		// This following API should be refined.
@@ -586,7 +619,7 @@ func (m *DefaultBaseMaster) CreateWorker(workerType WorkerType, config WorkerCon
 			return
 		}
 		dispatchTaskResp := executorResp.Resp.(*pb.DispatchTaskResponse)
-		log.L().Info("Worker dispatched", zap.Any("response", dispatchTaskResp))
+		log.L().Info("Worker dispatched", zap.Any("master-id", m.id), zap.Any("response", dispatchTaskResp))
 		errCode := dispatchTaskResp.GetErrorCode()
 		if errCode != pb.DispatchTaskErrorCode_OK {
 			err1 := m.Impl.OnWorkerDispatched(dispatchFailedDummyHandler,

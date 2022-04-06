@@ -7,7 +7,7 @@ PACKAGE_LIST := go list ./... | grep -vE 'proto|pb' | grep -v 'e2e'
 PACKAGES := $$($(PACKAGE_LIST))
 GOFILES := $$(find . -name '*.go' -type f | grep -vE 'proto|pb\.go')
 
-all: df-proto df-master df-executor df-master-client df-demotask df-demoserver
+all: df-proto df-master df-executor df-master-client df-demo
 
 df-proto:
 	./generate-proto.sh
@@ -23,12 +23,9 @@ df-executor:
 df-master-client:
 	go build -o bin/master-client ./cmd/master-client
 
-df-demoserver:
+df-demo:
 	go build -o bin/demoserver ./cmd/demoserver
 	cp ./bin/demoserver ./ansible/roles/common/files/demoserver.bin
-
-df-demotask:
-	go build -o bin/demotask ./cmd/demotask
 
 unit_test:
 	mkdir -p "$(TEST_DIR)"
@@ -48,11 +45,12 @@ fmt:
 
 tidy:
 	@echo "check go mod tidy"
+	go mod tidy
 
 lint:
 	echo "golangci-lint"; \
 	tools/bin/golangci-lint run --config=./.golangci.yml --timeout 10m0s --skip-files "pb"
 
 kvmock: tools_setup
-	tools/bin/mockgen github.com/hanfei1991/microcosm/pkg/metaclient KVClient \
-	> pkg/metaclient/kvclient/mock/mockclient.go
+	tools/bin/mockgen github.com/hanfei1991/microcosm/pkg/meta/metaclient KVClient \
+	> pkg/meta/kvclient/mock/mockclient.go

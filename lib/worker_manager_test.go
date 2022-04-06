@@ -7,16 +7,18 @@ import (
 	"testing"
 	"time"
 
-	derror "github.com/hanfei1991/microcosm/pkg/errors"
-
 	"github.com/pingcap/tiflow/pkg/workerpool"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/dig"
 
+	libModel "github.com/hanfei1991/microcosm/lib/model"
+	"github.com/hanfei1991/microcosm/lib/statusutil"
 	"github.com/hanfei1991/microcosm/pkg/clock"
 	dcontext "github.com/hanfei1991/microcosm/pkg/context"
 	"github.com/hanfei1991/microcosm/pkg/deps"
-	"github.com/hanfei1991/microcosm/pkg/metadata"
+	derror "github.com/hanfei1991/microcosm/pkg/errors"
+	mockkv "github.com/hanfei1991/microcosm/pkg/meta/kvclient/mock"
+	"github.com/hanfei1991/microcosm/pkg/meta/metaclient"
 	"github.com/hanfei1991/microcosm/pkg/p2p"
 )
 
@@ -32,7 +34,7 @@ type digParamList struct {
 
 	MessageSender         p2p.MessageSender
 	MessageHandlerManager p2p.MessageHandlerManager
-	MetaClient            metadata.MetaKV
+	MetaClient            metaclient.KVClient
 	Pool                  workerpool.AsyncPool
 }
 
@@ -58,7 +60,7 @@ func newWorkerManagerTestSuite(ctx context.Context) *workerManagerTestSuite {
 		digParamList: digParamList{
 			MessageSender:         p2p.NewMockMessageSender(),
 			MessageHandlerManager: p2p.NewMockMessageHandlerManager(),
-			MetaClient:            metadata.NewMetaMock(),
+			MetaClient:            mockkv.NewMetaMock(),
 			Pool:                  pool,
 		},
 		wg:     wg,
@@ -350,10 +352,9 @@ func TestWorkerManagerInitialization(t *testing.T) {
 		return manager.fsmState.Load() == workerManagerWaitingHeartbeats
 	}, 1*time.Second, 10*time.Millisecond)
 
-	clockDelta :=
-		manager.timeoutConfig.workerTimeoutDuration +
-			manager.timeoutConfig.workerTimeoutGracefulDuration +
-			10*time.Second
+	clockDelta := manager.timeoutConfig.workerTimeoutDuration +
+		manager.timeoutConfig.workerTimeoutGracefulDuration +
+		10*time.Second
 	manager.clock.(*clock.Mock).Set(time.Now().Add(clockDelta))
 
 	require.Eventually(t, func() bool {
@@ -381,8 +382,8 @@ func TestUpdateStatus(t *testing.T) {
 
 	workerMetaClient := NewWorkerMetadataClient(masterName, suite.MetaClient)
 	err := workerMetaClient.Store(ctx, workerID1,
-		&WorkerStatus{
-			Code:         WorkerStatusInit,
+		&libModel.WorkerStatus{
+			Code:         libModel.WorkerStatusInit,
 			ErrorMessage: "fake",
 			ExtBytes:     fastMarshalDummyStatus(t, 7),
 		})
@@ -398,42 +399,50 @@ func TestUpdateStatus(t *testing.T) {
 	err = safeAddWorker(manager, workerID1, executorNodeID1)
 	require.NoError(t, err)
 
-	require.Eventually(t, func() bool {
-		info, ok := manager.GetWorkerInfo(workerID1)
-		if !ok {
-			return false
-		}
-		return info.statusInitialized.Load()
-	}, time.Second, time.Millisecond*10)
-
 	status, ok := manager.GetStatus(workerID1)
 	require.True(t, ok)
-	require.Equal(t, WorkerStatusInit, status.Code)
+	require.Equal(t, libModel.WorkerStatusInit, status.Code)
 
 	err = workerMetaClient.Store(ctx, workerID1,
-		&WorkerStatus{
-			Code:         WorkerStatusError,
+		&libModel.WorkerStatus{
+			Code:         libModel.WorkerStatusError,
 			ErrorMessage: "fake",
 			ExtBytes:     fastMarshalDummyStatus(t, 7),
 		})
 	require.NoError(t, err)
 
-	manager.OnWorkerStatusUpdated(&WorkerStatusUpdatedMessage{
-		FromWorkerID: workerID1,
-		Epoch:        1,
+	manager.OnWorkerStatusUpdated(&statusutil.WorkerStatusMessage{
+		Worker:      workerID1,
+		MasterEpoch: 1,
+		Status: &libModel.WorkerStatus{
+			Code:         libModel.WorkerStatusError,
+			ErrorMessage: "fake",
+			ExtBytes:     fastMarshalDummyStatus(t, 7),
+		},
 	})
 
 	require.Eventually(t, func() bool {
-		err := manager.CheckStatusUpdate(ctx)
+		var (
+			status *libModel.WorkerStatus
+			handle WorkerHandle
+		)
+		err := manager.CheckStatusUpdate(func(hdl WorkerHandle, st *libModel.WorkerStatus) error {
+			status = st
+			handle = hdl
+			return nil
+		})
 		require.NoError(t, err)
-		return manager.GetWorkerHandle(workerID1).Status().Code == WorkerStatusError
+		if status != nil {
+			require.Equal(t, workerID1, handle.ID())
+		}
+		return status != nil && status.Code == libModel.WorkerStatusError
 	}, time.Second, 10*time.Millisecond)
 
 	handle := manager.GetWorkerHandle(workerID1)
 	require.NotNil(t, handle)
 	require.False(t, handle.IsTombStone())
-	require.Equal(t, &WorkerStatus{
-		Code:         WorkerStatusError,
+	require.Equal(t, &libModel.WorkerStatus{
+		Code:         libModel.WorkerStatusError,
 		ErrorMessage: "fake",
 		ExtBytes:     fastMarshalDummyStatus(t, 7),
 	}, handle.Status())
@@ -488,6 +497,68 @@ func TestWorkerTimedOut(t *testing.T) {
 	require.Contains(t, workers, workerID1)
 	handle := workers[workerID1]
 	require.True(t, handle.IsTombStone())
+
+	cancel()
+	suite.Close()
+}
+
+func TestWorkerTerminate(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.TODO(), 10*time.Second)
+	defer cancel()
+
+	suite := newWorkerManagerTestSuite(ctx)
+
+	manager := newWorkerManager(
+		suite.BuildDepsContext(t),
+		masterName,
+		true,
+		1,
+		&defaultTimeoutConfig,
+	).(*workerManagerImpl)
+
+	manager.clock = clock.NewMock()
+	manager.clock.(*clock.Mock).Set(time.Now())
+
+	mockKV := suite.MetaClient.(*mockkv.MetaMock)
+	workerMetaClient := NewWorkerMetadataClient(masterName, mockKV)
+	err := workerMetaClient.Store(ctx, workerID1, &libModel.WorkerStatus{Code: libModel.WorkerStatusNormal})
+	require.NoError(t, err)
+
+	err = safeAddWorker(manager, workerID1, executorNodeID1)
+	require.NoError(t, err)
+
+	err = manager.HandleHeartbeat(&HeartbeatPingMessage{
+		SendTime:     manager.clock.Mono(),
+		FromWorkerID: workerID1,
+		Epoch:        1,
+	}, executorNodeID1)
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		offlined, onlined := manager.Tick(ctx)
+		require.Empty(t, offlined)
+		return len(onlined) == 1
+	}, time.Second, 10*time.Millisecond)
+
+	// update worker status, set it finished
+	status := manager.statusReceivers[workerID1]
+	err = status.OnAsynchronousNotification(&libModel.WorkerStatus{
+		Code: libModel.WorkerStatusFinished,
+	})
+	require.NoError(t, err)
+
+	err = manager.CheckStatusUpdate(func(handle WorkerHandle, status *libModel.WorkerStatus) error {
+		require.Equal(t, libModel.WorkerStatusFinished, status.Code)
+		return nil
+	})
+	require.NoError(t, err)
+
+	offlined, onlined := manager.Tick(ctx)
+	require.Len(t, offlined, 1)
+	require.Empty(t, onlined)
+	require.Len(t, manager.tombstones, 1)
 
 	cancel()
 	suite.Close()
@@ -570,7 +641,7 @@ func TestWorkerTombstones(t *testing.T) {
 
 	workerMetaClient := NewWorkerMetadataClient(masterName, suite.MetaClient)
 	for i := 0; i < 10; i++ {
-		err := workerMetaClient.Store(ctx, fmt.Sprintf("worker-%d", i), &WorkerStatus{Code: WorkerStatusNormal})
+		err := workerMetaClient.Store(ctx, fmt.Sprintf("worker-%d", i), &libModel.WorkerStatus{Code: libModel.WorkerStatusNormal})
 		require.NoError(t, err)
 	}
 

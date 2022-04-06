@@ -6,15 +6,15 @@ import (
 	"testing"
 	"time"
 
-	dcontext "github.com/hanfei1991/microcosm/pkg/context"
-	"github.com/hanfei1991/microcosm/pkg/deps"
-
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	"github.com/hanfei1991/microcosm/client"
+	libModel "github.com/hanfei1991/microcosm/lib/model"
 	"github.com/hanfei1991/microcosm/model"
-	"github.com/hanfei1991/microcosm/pkg/metadata"
+	dcontext "github.com/hanfei1991/microcosm/pkg/context"
+	"github.com/hanfei1991/microcosm/pkg/deps"
+	mockkv "github.com/hanfei1991/microcosm/pkg/meta/kvclient/mock"
 	"github.com/hanfei1991/microcosm/pkg/p2p"
 )
 
@@ -57,6 +57,14 @@ func (m *testJobMasterImpl) OnMasterRecovered(ctx context.Context) error {
 	defer m.mu.Unlock()
 
 	args := m.Called(ctx)
+	return args.Error(0)
+}
+
+func (m *testJobMasterImpl) OnWorkerStatusUpdated(worker WorkerHandle, newStatus *libModel.WorkerStatus) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	args := m.Called(worker, newStatus)
 	return args.Error(0)
 }
 
@@ -108,13 +116,21 @@ func (m *testJobMasterImpl) OnJobManagerFailover(reason MasterFailoverReason) er
 	return args.Error(0)
 }
 
+func (m *testJobMasterImpl) OnJobManagerMessage(topic p2p.Topic, message p2p.MessageValue) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	args := m.Called(topic, message)
+	return args.Error(0)
+}
+
 func (m *testJobMasterImpl) IsJobMasterImpl() {
 	panic("unreachable")
 }
 
-func (m *testJobMasterImpl) Status() WorkerStatus {
-	return WorkerStatus{
-		Code: WorkerStatusNormal,
+func (m *testJobMasterImpl) Status() libModel.WorkerStatus {
+	return libModel.WorkerStatus{
+		Code: libModel.WorkerStatusNormal,
 	}
 }
 
@@ -122,7 +138,8 @@ func newBaseJobMasterForTests(impl JobMasterImpl) *DefaultBaseJobMaster {
 	params := masterParamListForTest{
 		MessageHandlerManager: p2p.NewMockMessageHandlerManager(),
 		MessageSender:         p2p.NewMockMessageSender(),
-		MetaKVClient:          metadata.NewMetaMock(),
+		MetaKVClient:          mockkv.NewMetaMock(),
+		UserRawKVClient:       mockkv.NewMetaMock(),
 		ExecutorClientManager: client.NewClientManager(),
 		ServerMasterClient:    &client.MockServerMasterClient{},
 	}

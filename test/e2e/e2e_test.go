@@ -4,25 +4,43 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io/ioutil"
 	"os"
-	"strconv"
 	"sync"
 	"testing"
 	"time"
 
-	"github.com/hanfei1991/microcosm/client"
-	cvsTask "github.com/hanfei1991/microcosm/executor/cvsTask"
-	"github.com/hanfei1991/microcosm/lib"
-	"github.com/hanfei1991/microcosm/pb"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc"
+
+	"github.com/hanfei1991/microcosm/client"
+	cvs "github.com/hanfei1991/microcosm/jobmaster/cvsJob"
+	"github.com/hanfei1991/microcosm/lib"
+	"github.com/hanfei1991/microcosm/pb"
 )
 
-var (
-	DemoAddress             = "127.0.0.1:1234"
-	MasterAddressList       = []string{"127.0.0.1:10245", "127.0.0.1:10246", "127.0.0.1:10247"}
-	RecordNum         int64 = 10000
-)
+type Config struct {
+	DemoAddr    string   `json:"demo_address"`
+	DemoHost    string   `json:"demo_host"`
+	MasterAddrs []string `json:"master_address_list"`
+	RecordNum   int64    `json:"demo_record_num"`
+	JobNum      int      `json:"job_num"`
+	DemoDataDir string   `json:"demo_data_dir"`
+	FileNum     int      `json:"file_num"`
+}
+
+func NewConfigFromFile(file string) (*Config, error) {
+	data, err := ioutil.ReadFile(file)
+	if err != nil {
+		return nil, err
+	}
+	var config Config
+	err = json.Unmarshal(data, &config)
+	if err != nil {
+		return nil, err
+	}
+	return &config, nil
+}
 
 type DemoClient struct {
 	conn   *grpc.ClientConn
@@ -41,36 +59,50 @@ func NewDemoClient(ctx context.Context, addr string) (*DemoClient, error) {
 }
 
 func TestSubmitTest(t *testing.T) {
-	cvsJobNum := os.Getenv("CVSJOBNUM")
-	jobNum := 2
-	if cvsJobNum != "" {
-		var err error
-		jobNum, err = strconv.Atoi(cvsJobNum)
-		require.Nil(t, err)
+	configPath := os.Getenv("CONFIG")
+	if configPath == "" {
+		configPath = "./docker.json"
 	}
+	config, err := NewConfigFromFile(configPath)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	democlient, err := NewDemoClient(ctx, config.DemoAddr)
+	require.Nil(t, err)
+	fmt.Printf("connect demo\n")
+
+	resp, err := democlient.client.GenerateData(ctx, &pb.GenerateDataRequest{
+		FileNum:   int32(config.FileNum),
+		RecordNum: int32(config.RecordNum),
+	})
+	require.Nil(t, err)
+	require.Empty(t, resp.ErrMsg)
+
 	var wg sync.WaitGroup
-	wg.Add(jobNum)
-	for i := 1; i <= jobNum; i++ {
+	wg.Add(config.JobNum)
+	for i := 1; i <= config.JobNum; i++ {
 		go func(idx int) {
-			cfg := &cvsTask.Config{
-				SrcDir:  "/data",
-				DstDir:  fmt.Sprintf("/data%d", idx),
-				SrcHost: "demo-server:1234",
-				DstHost: "demo-server:1234",
+			defer wg.Done()
+			cfg := &cvs.Config{
+				DstDir:  fmt.Sprintf(config.DemoDataDir+"/data%d", idx),
+				SrcHost: config.DemoHost,
+				DstHost: config.DemoHost,
 			}
-			testSubmitTest(t, cfg)
-			wg.Done()
+			testSubmitTest(t, cfg, config)
 		}(i)
 	}
 	wg.Wait()
 }
 
 // run this test after docker-compose has been up
-func testSubmitTest(t *testing.T, cfg *cvsTask.Config) {
+func testSubmitTest(t *testing.T, cfg *cvs.Config, config *Config) {
 	ctx := context.Background()
-	democlient, err := NewDemoClient(ctx, DemoAddress)
+	fmt.Printf("connect demo\n")
+	democlient, err := NewDemoClient(ctx, config.DemoAddr)
 	require.Nil(t, err)
-	masterclient, err := client.NewMasterClient(ctx, MasterAddressList)
+	fmt.Printf("connect clients\n")
+	masterclient, err := client.NewMasterClient(ctx, config.MasterAddrs)
 	require.Nil(t, err)
 
 	for {
@@ -81,6 +113,7 @@ func testSubmitTest(t *testing.T, cfg *cvsTask.Config) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	fmt.Printf("test is ready\n")
 
 	configBytes, err := json.Marshal(cfg)
 	require.Nil(t, err)
@@ -92,33 +125,30 @@ func testSubmitTest(t *testing.T, cfg *cvsTask.Config) {
 	require.Nil(t, err)
 	require.Nil(t, resp.Err)
 
+	fmt.Printf("job id %s\n", resp.JobIdStr)
+
 	queryReq := &pb.QueryJobRequest{
 		JobId: resp.JobIdStr,
 	}
 	// continue to query
 	for {
-		queryResp, err := masterclient.QueryJob(ctx, queryReq)
+		ctx1, cancel := context.WithTimeout(ctx, 3*time.Second)
+		queryResp, err := masterclient.QueryJob(ctx1, queryReq)
 		require.Nil(t, err)
 		require.Nil(t, queryResp.Err)
 		require.Equal(t, queryResp.Tp, int64(lib.CvsJobMaster))
-		if queryResp.Status == pb.QueryJobResponse_online {
-			statusBytes := queryResp.JobMasterInfo.Status
-			status := &lib.WorkerStatus{}
-			err = json.Unmarshal(statusBytes, status)
-			require.Nil(t, err)
-			if status.Code == lib.WorkerStatusFinished {
-				ext, err := strconv.ParseInt(string(status.ExtBytes), 10, 64)
-				require.Nil(t, err, string(status.ExtBytes), string(statusBytes))
-				require.Equal(t, ext, RecordNum)
-				break
-			}
+		cancel()
+		fmt.Printf("query id %s, status %d, time %s\n", resp.JobIdStr, int(queryResp.Status), time.Now().Format("2006-01-02 15:04:05"))
+		if queryResp.Status == pb.QueryJobResponse_finished {
+			break
 		}
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(time.Second)
 	}
+	fmt.Printf("job id %s checking\n", resp.JobIdStr)
 	// check files
 	demoResp, err := democlient.client.CheckDir(ctx, &pb.CheckDirRequest{
 		Dir: cfg.DstDir,
 	})
-	require.Nil(t, err)
-	require.Empty(t, demoResp.ErrFileName, demoResp.ErrMsg)
+	require.Nil(t, err, resp.JobIdStr)
+	require.Empty(t, demoResp.ErrMsg, demoResp.ErrFileIdx)
 }

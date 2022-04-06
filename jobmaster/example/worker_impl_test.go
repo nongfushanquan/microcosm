@@ -2,15 +2,14 @@ package example
 
 import (
 	"context"
-	"os"
 	"testing"
 	"time"
 
+	"github.com/hanfei1991/microcosm/lib"
+	libModel "github.com/hanfei1991/microcosm/lib/model"
+
 	"github.com/pingcap/tiflow/dm/pkg/log"
 	"github.com/stretchr/testify/require"
-	clientv3 "go.etcd.io/etcd/client/v3"
-
-	"github.com/hanfei1991/microcosm/lib"
 )
 
 func newExampleWorker() *exampleWorker {
@@ -39,25 +38,22 @@ func TestExampleWorker(t *testing.T) {
 	err = worker.Tick(ctx)
 	require.NoError(t, err)
 
-	require.FileExists(t, "./unit_test_resources/worker/1.txt")
-	require.FileExists(t, "./unit_test_resources/worker/2.txt")
-	defer func() {
-		err = os.RemoveAll("./unit_test_resources/worker")
-		require.NoError(t, err)
-	}()
+	broker := worker.BaseWorker.(*lib.BaseWorkerForTesting).Broker
+	broker.AssertPersisted(t, "/local/example")
+	broker.AssertFileExists(t, workerID, "/local/example", "1.txt")
+	broker.AssertFileExists(t, workerID, "/local/example", "2.txt")
 
 	time.Sleep(time.Second)
 	require.Eventually(t, func() bool {
-		return worker.Status().Code == lib.WorkerStatusFinished
+		return worker.Status().Code == libModel.WorkerStatusFinished
 	}, time.Second, time.Millisecond*100)
 
 	resp, err := worker.BaseWorker.MetaKVClient().Get(ctx, tickKey)
 	require.NoError(t, err)
-	etcdResp := resp.(*clientv3.GetResponse)
-	require.Len(t, etcdResp.Kvs, 1)
-	require.Equal(t, "2", string(etcdResp.Kvs[0].Value))
+	require.Len(t, resp.Kvs, 1)
+	require.Equal(t, "2", string(resp.Kvs[0].Value))
 
-	lib.MockBaseWorkerCheckSendMessage(t, worker.BaseWorker.(*lib.DefaultBaseWorker), testTopic, testMsg)
+	lib.MockBaseWorkerCheckSendMessage(t, worker.BaseWorker.(*lib.BaseWorkerForTesting).DefaultBaseWorker, testTopic, testMsg)
 	err = worker.Close(ctx)
 	require.NoError(t, err)
 }

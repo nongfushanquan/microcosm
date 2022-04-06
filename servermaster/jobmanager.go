@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 
+	libModel "github.com/hanfei1991/microcosm/lib/model"
+
 	"github.com/pingcap/tiflow/dm/pkg/log"
 	"go.uber.org/zap"
 
@@ -12,7 +14,7 @@ import (
 	"github.com/hanfei1991/microcosm/pb"
 	dcontext "github.com/hanfei1991/microcosm/pkg/context"
 	derrors "github.com/hanfei1991/microcosm/pkg/errors"
-	"github.com/hanfei1991/microcosm/pkg/metadata"
+	"github.com/hanfei1991/microcosm/pkg/meta/metaclient"
 	"github.com/hanfei1991/microcosm/pkg/p2p"
 	"github.com/hanfei1991/microcosm/pkg/uuid"
 )
@@ -45,7 +47,21 @@ type JobManagerImplV2 struct {
 }
 
 func (jm *JobManagerImplV2) PauseJob(ctx context.Context, req *pb.PauseJobRequest) *pb.PauseJobResponse {
-	panic("not implemented")
+	job := jm.JobFsm.QueryOnlineJob(req.JobIdStr)
+	if job == nil {
+		return &pb.PauseJobResponse{Err: &pb.Error{
+			Code: pb.ErrorCode_UnKnownJob,
+		}}
+	}
+	topic := lib.WorkerStatusChangeRequestTopic(jm.BaseMaster.MasterID(), job.WorkerHandle.ID())
+	msg := &lib.StatusChangeRequest{
+		SendTime:     jm.clocker.Mono(),
+		FromMasterID: jm.BaseMaster.MasterID(),
+		Epoch:        jm.BaseMaster.MasterMeta().Epoch,
+		ExpectState:  libModel.WorkerStatusStopped,
+	}
+	err := job.WorkerHandle.SendMessage(ctx, topic, msg, true /*nonblocking*/)
+	return &pb.PauseJobResponse{Err: derrors.ToPBError(err)}
 }
 
 func (jm *JobManagerImplV2) CancelJob(ctx context.Context, req *pb.CancelJobRequest) *pb.CancelJobResponse {
@@ -59,15 +75,24 @@ func (jm *JobManagerImplV2) QueryJob(ctx context.Context, req *pb.QueryJobReques
 	}
 	mcli := lib.NewMasterMetadataClient(req.JobId, jm.MetaKVClient())
 	if masterMeta, err := mcli.Load(ctx); err != nil {
-		log.L().Warn("failed to load master kv meta from meta store", zap.Error(err))
+		log.L().Warn("failed to load master kv meta from meta store", zap.Any("id", req.JobId), zap.Error(err))
 	} else {
-		if masterMeta != nil && masterMeta.StatusCode == lib.MasterStatusFinished {
+		if masterMeta != nil {
 			resp := &pb.QueryJobResponse{
 				Tp:     int64(masterMeta.Tp),
 				Config: masterMeta.Config,
-				Status: pb.QueryJobResponse_finished,
 			}
-			return resp
+			switch masterMeta.StatusCode {
+			case lib.MasterStatusFinished:
+				resp.Status = pb.QueryJobResponse_finished
+				return resp
+			case lib.MasterStatusStopped:
+				resp.Status = pb.QueryJobResponse_stopped
+				return resp
+			default:
+				log.L().Warn("load master kv meta from meta store, but status is not expected",
+					zap.Any("id", req.JobId), zap.Any("status", masterMeta.StatusCode), zap.Any("meta", masterMeta))
+			}
 		}
 	}
 	return &pb.QueryJobResponse{
@@ -85,6 +110,7 @@ func (jm *JobManagerImplV2) SubmitJob(ctx context.Context, req *pb.SubmitJobRequ
 		id  lib.WorkerID
 		err error
 	)
+
 	meta := &lib.MasterMetaKVData{
 		// TODO: we can use job name provided from user, but we must check the
 		// job name is unique before using it.
@@ -124,14 +150,13 @@ func (jm *JobManagerImplV2) SubmitJob(ctx context.Context, req *pb.SubmitJobRequ
 	// TODO: use correct worker cost
 	id, err = jm.BaseMaster.CreateWorker(
 		meta.Tp, meta, defaultJobMasterCost)
-
 	if err != nil {
 		log.L().Error("create job master met error", zap.Error(err))
 		resp.Err = derrors.ToPBError(err)
 		return resp
 	}
-	jm.JobFsm.JobDispatched(meta)
 
+	jm.JobFsm.JobDispatched(meta, false /*addFromFailover*/)
 	resp.JobIdStr = id
 	return resp
 }
@@ -141,17 +166,18 @@ func NewJobManagerImplV2(
 	dctx *dcontext.Context,
 	id lib.MasterID,
 ) (*JobManagerImplV2, error) {
-	masterMetaClient, err := dctx.Deps().Construct(func(metaKV metadata.MetaKV) (*lib.MasterMetadataClient, error) {
+	masterMetaClient, err := dctx.Deps().Construct(func(metaKV metaclient.KVClient) (*lib.MasterMetadataClient, error) {
 		return lib.NewMasterMetadataClient(id, metaKV), nil
 	})
 	if err != nil {
 		return nil, err
 	}
 
+	cli := masterMetaClient.(*lib.MasterMetadataClient)
 	impl := &JobManagerImplV2{
 		JobFsm:           NewJobFsm(),
 		uuidGen:          uuid.NewGenerator(),
-		masterMetaClient: masterMetaClient.(*lib.MasterMetadataClient),
+		masterMetaClient: cli,
 	}
 	impl.BaseMaster = lib.NewBaseMaster(
 		dctx,
@@ -164,7 +190,7 @@ func NewJobManagerImplV2(
 	// Initialized to true in order to trigger OnMasterRecovered of job manager.
 	meta := impl.MasterMeta()
 	meta.StatusCode = lib.MasterStatusInit
-	err = lib.StoreMasterMeta(dctx, impl.MetaKVClient(), meta)
+	err = lib.StoreMasterMeta(dctx, impl.BaseMaster.MetaKVClient(), meta)
 	if err != nil {
 		return nil, err
 	}
@@ -210,11 +236,11 @@ func (jm *JobManagerImplV2) OnMasterRecovered(ctx context.Context) error {
 		return err
 	}
 	for _, job := range jobs {
-		if job.StatusCode == lib.MasterStatusFinished {
-			log.L().Info("skip finished job", zap.Any("job", job))
+		if job.StatusCode == lib.MasterStatusFinished || job.StatusCode == lib.MasterStatusStopped {
+			log.L().Info("skip finished or stopped job", zap.Any("job", job))
 			continue
 		}
-		jm.JobFsm.JobDispatched(job)
+		jm.JobFsm.JobDispatched(job, true /*addFromFailover*/)
 		log.L().Info("recover job, move it to WaitAck job queue", zap.Any("job", job))
 	}
 	return nil
@@ -241,6 +267,9 @@ func (jm *JobManagerImplV2) OnWorkerOffline(worker lib.WorkerHandle, reason erro
 	if derrors.ErrWorkerFinish.Equal(reason) {
 		log.L().Info("job master finished", zap.String("id", worker.ID()))
 		needFailover = false
+	} else if derrors.ErrWorkerStop.Equal(reason) {
+		log.L().Info("job master stopped", zap.String("id", worker.ID()))
+		needFailover = false
 	} else {
 		log.L().Info("on worker offline", zap.Any("id", worker.ID()), zap.Any("reason", reason))
 	}
@@ -251,6 +280,11 @@ func (jm *JobManagerImplV2) OnWorkerOffline(worker lib.WorkerHandle, reason erro
 // OnWorkerMessage implements lib.MasterImpl.OnWorkerMessage
 func (jm *JobManagerImplV2) OnWorkerMessage(worker lib.WorkerHandle, topic p2p.Topic, message interface{}) error {
 	log.L().Info("on worker message", zap.Any("id", worker.ID()), zap.Any("topic", topic), zap.Any("message", message))
+	return nil
+}
+
+func (jm *JobManagerImplV2) OnWorkerStatusUpdated(worker lib.WorkerHandle, newStatus *libModel.WorkerStatus) error {
+	log.L().Info("on worker status updated", zap.String("worker-id", worker.ID()), zap.Any("status", newStatus))
 	return nil
 }
 

@@ -5,6 +5,12 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hanfei1991/microcosm/pkg/deps"
+	extkv "github.com/hanfei1991/microcosm/pkg/meta/extension"
+	"github.com/hanfei1991/microcosm/pkg/meta/kvclient"
+	"github.com/hanfei1991/microcosm/pkg/meta/metaclient"
+	"github.com/hanfei1991/microcosm/pkg/tenant"
+
 	"github.com/pingcap/tiflow/dm/pkg/log"
 	p2pImpl "github.com/pingcap/tiflow/pkg/p2p"
 	"github.com/pingcap/tiflow/pkg/security"
@@ -27,11 +33,10 @@ import (
 	"github.com/hanfei1991/microcosm/pb"
 	"github.com/hanfei1991/microcosm/pkg/config"
 	dcontext "github.com/hanfei1991/microcosm/pkg/context"
-	"github.com/hanfei1991/microcosm/pkg/deps"
 	"github.com/hanfei1991/microcosm/pkg/errors"
-	"github.com/hanfei1991/microcosm/pkg/metadata"
+	"github.com/hanfei1991/microcosm/pkg/externalresource"
+	"github.com/hanfei1991/microcosm/pkg/externalresource/broker"
 	"github.com/hanfei1991/microcosm/pkg/p2p"
-	"github.com/hanfei1991/microcosm/pkg/resource"
 	"github.com/hanfei1991/microcosm/pkg/serverutils"
 	"github.com/hanfei1991/microcosm/test"
 	"github.com/hanfei1991/microcosm/test/mock"
@@ -44,9 +49,9 @@ type Server struct {
 	tcpServer   tcpserver.TCPServer
 	grpcSrv     *grpc.Server
 	cli         client.MasterClient
-	cliUpdateCh chan []string
+	cliUpdateCh chan cliUpdateInfo
 	sch         *runtime.Runtime
-	workerRtm   *worker.Runtime
+	workerRtm   *worker.TaskRunner
 	msgServer   *p2p.MessageRPCService
 	info        *model.NodeInfo
 
@@ -56,17 +61,21 @@ type Server struct {
 
 	// etcdCli connects to server master embed etcd, it should be used in service
 	// discovery only.
-	etcdCli         *clientv3.Client
-	metastore       metadata.MetaKV
+	etcdCli *clientv3.Client
+	// framework metastore prefix kvclient
+	metaKVClient metaclient.KVClient
+	// user metastore raw kvclient(reuse for all workers)
+	userRawKVClient extkv.KVClientEx
 	p2pMsgRouter    p2pImpl.MessageRouter
 	discoveryKeeper *serverutils.DiscoveryKeepaliver
+	resourceBroker  *externalresource.Broker
 }
 
 func NewServer(cfg *Config, ctx *test.Context) *Server {
 	s := Server{
 		cfg:         cfg,
 		testCtx:     ctx,
-		cliUpdateCh: make(chan []string),
+		cliUpdateCh: make(chan cliUpdateInfo),
 	}
 	return &s
 }
@@ -149,8 +158,15 @@ func (s *Server) buildDeps(wid lib.WorkerID) (*deps.Deps, error) {
 		return nil, err
 	}
 
-	err = deps.Provide(func() metadata.MetaKV {
-		return s.metastore
+	err = deps.Provide(func() metaclient.KVClient {
+		return s.metaKVClient
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	err = deps.Provide(func() extkv.KVClientEx {
+		return s.userRawKVClient
 	})
 	if err != nil {
 		return nil, err
@@ -170,12 +186,20 @@ func (s *Server) buildDeps(wid lib.WorkerID) (*deps.Deps, error) {
 		return nil, err
 	}
 
-	proxy, err := resource.DefaultBroker.NewProxyForWorker(context.TODO(), wid)
+	proxy, err := s.resourceBroker.NewProxyForWorker(context.TODO(), wid)
 	if err != nil {
 		return nil, err
 	}
-	err = deps.Provide(func() resource.Proxy {
+	err = deps.Provide(func() externalresource.Proxy {
 		return proxy
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	err = deps.Provide(func() broker.Broker {
+		// TODO: use correct broker.Broker
+		return nil
 	})
 	if err != nil {
 		return nil, err
@@ -192,7 +216,8 @@ func (s *Server) DispatchTask(ctx context.Context, req *pb.DispatchTaskRequest) 
 	dctx.Dependencies = dcontext.RuntimeDependencies{
 		MessageHandlerManager: s.msgServer.MakeHandlerManager(),
 		MessageRouter:         p2p.NewMessageSender(s.p2pMsgRouter),
-		MetaKVClient:          s.metastore,
+		MetaKVClient:          s.metaKVClient,
+		UserRawKVClient:       s.userRawKVClient,
 		ExecutorClientManager: client.NewClientManager(),
 		ServerMasterClient:    s.cli,
 	}
@@ -204,6 +229,7 @@ func (s *Server) DispatchTask(ctx context.Context, req *pb.DispatchTaskRequest) 
 	dctx = dctx.WithDeps(dp)
 	dctx.Environ.NodeID = p2p.NodeID(s.info.ID)
 	dctx.Environ.Addr = s.info.Addr
+
 	masterMeta := &lib.MasterMetaKVData{
 		// GetWorkerId here returns id of current unit
 		ID:     req.GetWorkerId(),
@@ -228,9 +254,9 @@ func (s *Server) DispatchTask(ctx context.Context, req *pb.DispatchTaskRequest) 
 		return nil, err
 	}
 
-	if err := s.workerRtm.SubmitTask(newWorker); err != nil {
+	if err := s.workerRtm.AddTask(newWorker); err != nil {
 		errCode := pb.DispatchTaskErrorCode_Other
-		if errors.ErrRuntimeReachedCapacity.Equal(err) {
+		if errors.ErrRuntimeReachedCapacity.Equal(err) || errors.ErrRuntimeIncomingQueueFull.Equal(err) {
 			errCode = pb.DispatchTaskErrorCode_NoResource
 		}
 
@@ -259,14 +285,28 @@ func (s *Server) Stop() {
 		}
 	}
 
-	if s.metastore != nil {
+	if s.etcdCli != nil {
 		// clear executor info in metastore to accelerate service discovery. If
 		// not delete actively, the session will be timeout after TTL.
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
-		_, err := s.metastore.Delete(ctx, s.info.EtcdKey())
+		_, err := s.etcdCli.Delete(ctx, s.info.EtcdKey())
 		if err != nil {
 			log.L().Warn("failed to delete executor info", zap.Error(err))
+		}
+	}
+
+	if s.metaKVClient != nil {
+		err := s.metaKVClient.Close()
+		if err != nil {
+			log.L().Warn("failed to close connection to framework metastore", zap.Error(err))
+		}
+	}
+
+	if s.userRawKVClient != nil {
+		err := s.userRawKVClient.Close()
+		if err != nil {
+			log.L().Warn("failed to close connection to user metastore", zap.Error(err))
 		}
 	}
 
@@ -309,7 +349,11 @@ func (s *Server) startMsgService(ctx context.Context, wg *errgroup.Group) (err e
 }
 
 const (
-	defaultRuntimeCapacity = 65536 // TODO make this configurable
+	// TODO since we introduced queuing in the TaskRunner, it is no longer
+	// easy to implement the capacity. Think of a better solution later.
+	// defaultRuntimeCapacity      = 65536
+	defaultRuntimeIncomingQueueLen = 256
+	defaultRuntimeInitConcurrency  = 256
 )
 
 func (s *Server) Run(ctx context.Context) error {
@@ -327,18 +371,19 @@ func (s *Server) Run(ctx context.Context) error {
 		return nil
 	})
 
-	pollCon := s.cfg.PollConcurrency
-	s.workerRtm = worker.NewRuntime(ctx, defaultRuntimeCapacity)
+	s.workerRtm = worker.NewTaskRunner(defaultRuntimeIncomingQueueLen, defaultRuntimeInitConcurrency)
 
 	wg.Go(func() error {
-		s.workerRtm.Start(ctx, pollCon)
-		return nil
+		return s.workerRtm.Run(ctx)
 	})
 
 	err := s.selfRegister(ctx)
 	if err != nil {
 		return err
 	}
+
+	// TODO: make the prefix configurable later
+	s.resourceBroker = externalresource.NewBroker(s.cfg.Name, s.cfg.Name, s.cli)
 
 	s.p2pMsgRouter = p2p.NewMessageRouter(p2p.NodeID(s.info.ID), s.info.Addr)
 
@@ -353,7 +398,7 @@ func (s *Server) Run(ctx context.Context) error {
 		return err
 	}
 
-	err = s.connectToMetaStore(ctx)
+	err = s.fetchMetaStore(ctx)
 	if err != nil {
 		return err
 	}
@@ -411,7 +456,7 @@ func (s *Server) startTCPService(ctx context.Context, wg *errgroup.Group) error 
 }
 
 // current the metastore is an embed etcd underlying
-func (s *Server) connectToMetaStore(ctx context.Context) error {
+func (s *Server) fetchMetaStore(ctx context.Context) error {
 	// query service discovery metastore to fetch metastore connection endpoint
 	resp, err := s.cli.QueryMetaStore(
 		ctx,
@@ -446,16 +491,54 @@ func (s *Server) connectToMetaStore(ctx context.Context) error {
 		},
 	})
 	if err != nil {
+		return errors.ErrExecutorEtcdConnFail.Wrap(err)
+	}
+	s.etcdCli = etcdCli
+
+	// fetch framework metastore connection endpoint
+	resp, err = s.cli.QueryMetaStore(
+		ctx,
+		&pb.QueryMetaStoreRequest{Tp: pb.StoreType_SystemMetaStore},
+		s.cfg.RPCTimeout,
+	)
+	if err != nil {
+		return err
+	}
+	log.L().Info("update framework metastore", zap.String("addr", resp.Address))
+
+	conf := metaclient.StoreConfigParams{
+		Endpoints: []string{resp.Address},
+	}
+
+	cliEx, err := kvclient.NewKVClient(&conf)
+	if err != nil {
+		log.L().Error("access framework metastore fail", zap.Any("store-conf", conf), zap.Error(err))
+		return err
+	}
+	// [TODO] use FrameTenantID here if support multi-tenant
+	s.metaKVClient = kvclient.NewPrefixKVClient(cliEx, tenant.DefaultUserTenantID)
+
+	// fetch user metastore connection endpoint
+	resp, err = s.cli.QueryMetaStore(
+		ctx,
+		&pb.QueryMetaStoreRequest{Tp: pb.StoreType_AppMetaStore},
+		s.cfg.RPCTimeout,
+	)
+	if err != nil {
+		return err
+	}
+	log.L().Info("update user metastore", zap.String("addr", resp.Address))
+
+	conf = metaclient.StoreConfigParams{
+		Endpoints: []string{resp.Address},
+	}
+	s.userRawKVClient, err = kvclient.NewKVClient(&conf)
+	if err != nil {
+		log.L().Error("access user metastore fail", zap.Any("store-conf", conf), zap.Error(err))
 		return err
 	}
 
-	// TODO: we share system metastore with service discovery etcd, in the future
-	// we will separate them
-	s.metastore = metadata.NewMetaEtcd(etcdCli)
-	// TODO: after metastore is separted from server master embed etcd, this etcdCli
-	// should be another one.
-	s.etcdCli = etcdCli
-	return err
+	return nil
 }
 
 func (s *Server) selfRegister(ctx context.Context) (err error) {
@@ -484,7 +567,12 @@ func (s *Server) selfRegister(ctx context.Context) (err error) {
 	return nil
 }
 
-// TODO: Right now heartbeat maintainace is too simple. We should look into
+type cliUpdateInfo struct {
+	leaderURL string
+	urls      []string
+}
+
+// TODO: Right now heartbeat maintainable is too simple. We should look into
 // what other frameworks do or whether we can use grpc heartbeat.
 func (s *Server) keepHeartbeat(ctx context.Context) error {
 	ticker := time.NewTicker(s.cfg.KeepAliveInterval)
@@ -543,8 +631,13 @@ func (s *Server) keepHeartbeat(ctx context.Context) error {
 			// update master client could cost long time, we make it a background
 			// job and if there is running update task, we ignore once since more
 			// heartbeats will be called later.
+
+			info := cliUpdateInfo{
+				leaderURL: resp.Leader,
+				urls:      resp.Addrs,
+			}
 			select {
-			case s.cliUpdateCh <- resp.Addrs:
+			case s.cliUpdateCh <- info:
 			default:
 			}
 		}
@@ -556,11 +649,14 @@ func getJoinURLs(addrs string) []string {
 }
 
 func (s *Server) reportTaskRescOnce(ctx context.Context) error {
+	resourceIDs := s.resourceBroker.AllocatedIDs()
+
 	rescs := s.sch.Resource()
 	req := &pb.ExecWorkloadRequest{
 		// TODO: use which field as ExecutorId is more accurate
 		ExecutorId: s.cfg.WorkerAddr,
 		Workloads:  make([]*pb.ExecWorkload, 0, len(rescs)),
+		ResourceId: resourceIDs,
 	}
 	for tp, resc := range rescs {
 		req.Workloads = append(req.Workloads, &pb.ExecWorkload{
@@ -600,8 +696,8 @@ func (s *Server) bgUpdateServerMasterClients(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return nil
-		case urls := <-s.cliUpdateCh:
-			s.cli.UpdateClients(ctx, urls)
+		case info := <-s.cliUpdateCh:
+			s.cli.UpdateClients(ctx, info.urls, info.leaderURL)
 		}
 	}
 }

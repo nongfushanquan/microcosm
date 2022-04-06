@@ -12,11 +12,15 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/hanfei1991/microcosm/client"
+	libModel "github.com/hanfei1991/microcosm/lib/model"
+	"github.com/hanfei1991/microcosm/pb"
 	dcontext "github.com/hanfei1991/microcosm/pkg/context"
 	"github.com/hanfei1991/microcosm/pkg/deps"
-	"github.com/hanfei1991/microcosm/pkg/metadata"
+	"github.com/hanfei1991/microcosm/pkg/externalresource/broker"
+	extkv "github.com/hanfei1991/microcosm/pkg/meta/extension"
+	mockkv "github.com/hanfei1991/microcosm/pkg/meta/kvclient/mock"
+	"github.com/hanfei1991/microcosm/pkg/meta/metaclient"
 	"github.com/hanfei1991/microcosm/pkg/p2p"
-	"github.com/hanfei1991/microcosm/pkg/resource"
 )
 
 type MockMasterImpl struct {
@@ -35,7 +39,8 @@ type MockMasterImpl struct {
 
 	messageHandlerManager *p2p.MockMessageHandlerManager
 	messageSender         p2p.MessageSender
-	metaKVClient          *metadata.MetaMock
+	metaKVClient          *mockkv.MetaMock
+	userRawKVClient       *mockkv.MetaMock
 	executorClientManager *client.Manager
 	serverMasterClient    *client.MockServerMasterClient
 }
@@ -50,7 +55,8 @@ func NewMockMasterImpl(masterID, id MasterID) *MockMasterImpl {
 	ret.DefaultBaseMaster = MockBaseMaster(id, ret)
 	ret.messageHandlerManager = ret.DefaultBaseMaster.messageHandlerManager.(*p2p.MockMessageHandlerManager)
 	ret.messageSender = ret.DefaultBaseMaster.messageSender
-	ret.metaKVClient = ret.DefaultBaseMaster.metaKVClient.(*metadata.MetaMock)
+	ret.metaKVClient = ret.DefaultBaseMaster.metaKVClient.(*mockkv.MetaMock)
+	ret.userRawKVClient = ret.DefaultBaseMaster.metaKVClient.(*mockkv.MetaMock)
 	ret.executorClientManager = ret.DefaultBaseMaster.executorClientManager.(*client.Manager)
 	ret.serverMasterClient = ret.DefaultBaseMaster.serverMasterClient.(*client.MockServerMasterClient)
 
@@ -62,10 +68,11 @@ type masterParamListForTest struct {
 
 	MessageHandlerManager p2p.MessageHandlerManager
 	MessageSender         p2p.MessageSender
-	MetaKVClient          metadata.MetaKV
+	MetaKVClient          metaclient.KVClient
+	UserRawKVClient       extkv.KVClientEx
 	ExecutorClientManager client.ClientsManager
 	ServerMasterClient    client.MasterClient
-	ResourceProxy         resource.Proxy
+	ResourceBroker        broker.Broker
 }
 
 func (m *MockMasterImpl) Reset() {
@@ -82,9 +89,10 @@ func (m *MockMasterImpl) Reset() {
 			MessageHandlerManager: m.messageHandlerManager,
 			MessageSender:         m.messageSender,
 			MetaKVClient:          m.metaKVClient,
+			UserRawKVClient:       m.userRawKVClient,
 			ExecutorClientManager: m.executorClientManager,
 			ServerMasterClient:    m.serverMasterClient,
-			ResourceProxy:         resource.NewMockProxy(m.id),
+			ResourceBroker:        broker.NewBrokerForTesting("executor-1"),
 		}
 	})
 	if err != nil {
@@ -115,6 +123,14 @@ func (m *MockMasterImpl) OnMasterRecovered(ctx context.Context) error {
 	defer m.mu.Unlock()
 
 	args := m.Called(ctx)
+	return args.Error(0)
+}
+
+func (m *MockMasterImpl) OnWorkerStatusUpdated(worker WorkerHandle, newStatus *libModel.WorkerStatus) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	args := m.Called(worker, newStatus)
 	return args.Error(0)
 }
 
@@ -191,4 +207,39 @@ func (s *dummyStatus) Marshal() ([]byte, error) {
 
 func (s *dummyStatus) Unmarshal(data []byte) error {
 	return json.Unmarshal(data, s)
+}
+
+type MockWorkerHandler struct {
+	mock.Mock
+
+	WorkerID WorkerID
+}
+
+func (m *MockWorkerHandler) SendMessage(ctx context.Context, topic p2p.Topic, message interface{}, nonblocking bool) error {
+	args := m.Called(ctx, topic, message, nonblocking)
+	return args.Error(0)
+}
+
+func (m *MockWorkerHandler) Status() *libModel.WorkerStatus {
+	args := m.Called()
+	return args.Get(0).(*libModel.WorkerStatus)
+}
+
+func (m *MockWorkerHandler) ID() WorkerID {
+	return m.WorkerID
+}
+
+func (m *MockWorkerHandler) IsTombStone() bool {
+	args := m.Called()
+	return args.Bool(0)
+}
+
+func (m *MockWorkerHandler) ToPB() (*pb.WorkerInfo, error) {
+	args := m.Called()
+	return args.Get(0).(*pb.WorkerInfo), args.Error(1)
+}
+
+func (m *MockWorkerHandler) DeleteTombStone(ctx context.Context) (bool, error) {
+	args := m.Called()
+	return args.Bool(0), args.Error(1)
 }
