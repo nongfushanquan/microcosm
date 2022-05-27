@@ -6,17 +6,17 @@ import (
 	"github.com/pingcap/errors"
 	bf "github.com/pingcap/tidb-tools/pkg/binlog-filter"
 	"github.com/pingcap/tidb-tools/pkg/column-mapping"
-	"github.com/pingcap/tidb-tools/pkg/filter"
-	router "github.com/pingcap/tidb-tools/pkg/table-router"
+	"github.com/pingcap/tidb/util/filter"
+	router "github.com/pingcap/tidb/util/table-router"
 	dmconfig "github.com/pingcap/tiflow/dm/dm/config"
 	"gopkg.in/yaml.v2"
 )
 
 // JobCfg copies from tiflow/dm/config/config.go and removes some deprecated fields.
+// DISCUSS: support command line args. e.g. --start-time.
 type JobCfg struct {
 	Name                string                                `yaml:"name" toml:"name" json:"name"`
 	TaskMode            string                                `yaml:"task-mode" toml:"task-mode" json:"task-mode"`
-	IsSharding          bool                                  `yaml:"is-sharding" toml:"is-sharding" json:"is-sharding"`
 	ShardMode           string                                `yaml:"shard-mode" toml:"shard-mode" json:"shard-mode"` // when `shard-mode` set, we always enable sharding support.
 	IgnoreCheckingItems []string                              `yaml:"ignore-checking-items" toml:"ignore-checking-items" json:"ignore-checking-items"`
 	Timezone            string                                `yaml:"timezone" toml:"timezone" json:"timezone"`
@@ -32,6 +32,7 @@ type JobCfg struct {
 	Loaders             map[string]*dmconfig.LoaderConfig     `yaml:"loaders" toml:"loaders" json:"loaders"`
 	Syncers             map[string]*dmconfig.SyncerConfig     `yaml:"syncers" toml:"syncers" json:"syncers"`
 	Routes              map[string]*router.TableRule          `yaml:"routes" toml:"routes" json:"routes"`
+	Validators          map[string]*dmconfig.ValidatorConfig  `yaml:"validators" toml:"validators" json:"validators"`
 
 	// remove source config, use db config instead.
 	Upstreams []*UpstreamCfg `yaml:"upstreams" toml:"upstreams" json:"upstreams"`
@@ -49,10 +50,8 @@ type JobCfg struct {
 	// removed
 	// CleanDumpFile  bool                    `yaml:"clean-dump-file" toml:"clean-dump-file" json:"clean-dump-file"`
 
-	// should use a extra job?
-	// Validators map[string]*dmconfig.ValidatorConfig `yaml:"validators" toml:"validators" json:"validators"`
-
 	// deprecated
+	// IsSharding          bool                                  `yaml:"is-sharding" toml:"is-sharding" json:"is-sharding"`
 	// EnableHeartbeat bool `yaml:"enable-heartbeat" toml:"enable-heartbeat" json:"enable-heartbeat"`
 	// HeartbeatUpdateInterval int `yaml:"heartbeat-update-interval" toml:"heartbeat-update-interval" json:"heartbeat-update-interval"`
 	// HeartbeatReportInterval int    `yaml:"heartbeat-report-interval" toml:"heartbeat-report-interval" json:"heartbeat-report-interval"`
@@ -63,6 +62,7 @@ type JobCfg struct {
 	// RemoveMeta bool `yaml:"remove-meta"`
 }
 
+// TaskCfg alias JobCfg
 // The difference between task configuration and job configuration is that a task has only one usptream.
 type TaskCfg JobCfg
 
@@ -72,56 +72,32 @@ type UpstreamCfg struct {
 	DBCfg                  *dmconfig.DBConfig `yaml:"db-config" toml:"db-config" json:"db-config"`
 }
 
+// DecodeFile reads file content from a given path and decodes it.
 func (c *JobCfg) DecodeFile(fpath string) error {
 	bs, err := os.ReadFile(fpath)
 	if err != nil {
 		return errors.Trace(err)
 	}
+	return c.Decode(bs)
+}
 
-	if err = yaml.UnmarshalStrict(bs, c); err != nil {
+// Decode unmarshals the content into JobCfg and calls adjust() on it.
+// TODO: unify config type
+// Now, dmJobmaster use yaml, dmWorker use toml, and lib use json...
+func (c *JobCfg) Decode(content []byte) error {
+	if err := yaml.UnmarshalStrict(content, c); err != nil {
 		return err
 	}
 	return c.adjust()
 }
 
-// copy from tiflow/dm/config/config.go#adjust
-// should be refactor
-func (c *JobCfg) adjust() error {
-	for _, upstream := range c.Upstreams {
-		if len(upstream.MydumperConfigName) > 0 {
-			rule, ok := c.Mydumpers[upstream.MydumperConfigName]
-			if !ok {
-				return errors.Errorf("mydumper config %s not exist in mydumpers", upstream.MydumperConfigName)
-			}
-			upstream.Mydumper = new(dmconfig.MydumperConfig)
-			*upstream.Mydumper = *rule
-		}
-		if len(upstream.LoaderConfigName) > 0 {
-			rule, ok := c.Loaders[upstream.LoaderConfigName]
-			if !ok {
-				return errors.Errorf("loader config %s not exist in loaders", upstream.LoaderConfigName)
-			}
-			upstream.Loader = new(dmconfig.LoaderConfig)
-			*upstream.Loader = *rule // ref loader config
-		}
-		if len(upstream.SyncerConfigName) > 0 {
-			rule, ok := c.Syncers[upstream.SyncerConfigName]
-			if !ok {
-				return errors.Errorf("syncer config %s not exist in syncers", upstream.SyncerConfigName)
-			}
-			upstream.Syncer = new(dmconfig.SyncerConfig)
-			*upstream.Syncer = *rule // ref syncer config
-		}
-	}
-
-	return nil
-}
-
+// Yaml serializes the JobCfg into a YAML document.
 func (c *JobCfg) Yaml() (string, error) {
 	b, err := yaml.Marshal(c)
 	return string(b), err
 }
 
+// Clone returns a deep copy of JobCfg
 func (c *JobCfg) Clone() (*JobCfg, error) {
 	content, err := c.Yaml()
 	if err != nil {
@@ -132,6 +108,8 @@ func (c *JobCfg) Clone() (*JobCfg, error) {
 	return clone, err
 }
 
+// ToTaskConfigs converts job config to a map, mapping from upstream source id
+// to task config.
 func (c *JobCfg) ToTaskConfigs() map[string]*TaskCfg {
 	taskCfgs := make(map[string]*TaskCfg, len(c.Upstreams))
 	for _, mysqlInstance := range c.Upstreams {
@@ -145,11 +123,50 @@ func (c *JobCfg) ToTaskConfigs() map[string]*TaskCfg {
 	return taskCfgs
 }
 
-// ToDMSubtaskCfg adapts a TaskCfg to a SubTaskCfg for worker now.
+// toDMTaskCfg transform a jobCfg to dm TaskCfg.
+func (c *JobCfg) toDMTaskCfg() (*dmconfig.TaskConfig, error) {
+	dmTaskCfg := &dmconfig.TaskConfig{}
+
+	// Copy all the fields contained in dmTaskCfg.
+	content, err := c.Yaml()
+	if err != nil {
+		return nil, err
+	}
+	if err = yaml.Unmarshal([]byte(content), dmTaskCfg); err != nil {
+		return nil, err
+	}
+
+	// transform all the fields not contained in dmTaskCfg.
+	for _, upstream := range c.Upstreams {
+		dmTaskCfg.MySQLInstances = append(dmTaskCfg.MySQLInstances, &upstream.MySQLInstance)
+	}
+	return dmTaskCfg, nil
+}
+
+func (c *JobCfg) fromDMTaskCfg(dmTaskCfg *dmconfig.TaskConfig) error {
+	// Copy all the fields contained in jobCfg.
+	return yaml.Unmarshal([]byte(dmTaskCfg.String()), c)
+
+	// transform all the fields not contained in dmTaskCfg.
+	// no need to transform mysqlInstance because we use reference above.
+	// nothing now.
+}
+
+func (c *JobCfg) adjust() error {
+	dmTaskCfg, err := c.toDMTaskCfg()
+	if err != nil {
+		return err
+	}
+	if err := dmTaskCfg.Adjust(); err != nil {
+		return err
+	}
+	return c.fromDMTaskCfg(dmTaskCfg)
+}
+
+// ToDMSubTaskCfg adapts a TaskCfg to a SubTaskCfg for worker now.
 // TODO: fully support all fields
 func (c *TaskCfg) ToDMSubTaskCfg() *dmconfig.SubTaskConfig {
 	cfg := &dmconfig.SubTaskConfig{}
-	cfg.IsSharding = c.IsSharding
 	cfg.ShardMode = c.ShardMode
 	cfg.OnlineDDL = c.OnlineDDL
 	cfg.ShadowTableRules = c.ShadowTableRules
@@ -167,6 +184,7 @@ func (c *TaskCfg) ToDMSubTaskCfg() *dmconfig.SubTaskConfig {
 	cfg.Experimental = c.Experimental
 	cfg.CollationCompatible = c.CollationCompatible
 	cfg.SourceID = c.Upstreams[0].SourceID
+	cfg.BAList = c.BAList[c.Upstreams[0].BAListName]
 
 	cfg.RouteRules = make([]*router.TableRule, len(c.Upstreams[0].RouteRules))
 	for j, name := range c.Upstreams[0].RouteRules {

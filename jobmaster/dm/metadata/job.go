@@ -6,11 +6,12 @@ import (
 	"github.com/pingcap/errors"
 
 	"github.com/hanfei1991/microcosm/jobmaster/dm/config"
-	"github.com/hanfei1991/microcosm/lib"
+	libModel "github.com/hanfei1991/microcosm/lib/model"
 	"github.com/hanfei1991/microcosm/pkg/adapter"
 	"github.com/hanfei1991/microcosm/pkg/meta/metaclient"
 )
 
+// TaskStage represents internal stage of a task
 // TODO: use Stage in lib or move Stage to lib.
 type TaskStage int
 
@@ -33,6 +34,7 @@ type Job struct {
 	Tasks map[string]*Task
 }
 
+// NewJob creates a new Job instance
 func NewJob(jobCfg *config.JobCfg) *Job {
 	taskCfgs := jobCfg.ToTaskConfigs()
 	job := &Job{
@@ -45,12 +47,14 @@ func NewJob(jobCfg *config.JobCfg) *Job {
 	return job
 }
 
+// Task is the minimum working unit of a job.
 // A job may contain multiple upstream and it will be converted into multiple tasks.
 type Task struct {
 	Cfg   *config.TaskCfg
 	Stage TaskStage
 }
 
+// NewTask creates a new Task instance
 func NewTask(taskCfg *config.TaskCfg) *Task {
 	return &Task{
 		Cfg:   taskCfg,
@@ -60,24 +64,27 @@ func NewTask(taskCfg *config.TaskCfg) *Task {
 
 // JobStore manages the state of a job.
 type JobStore struct {
-	*DefaultStore
+	*TomlStore
 
-	id lib.MasterID
+	id libModel.MasterID
 }
 
-func NewJobStore(id lib.MasterID, kvClient metaclient.KVClient) *JobStore {
+// NewJobStore creates a new JobStore instance
+func NewJobStore(id libModel.MasterID, kvClient metaclient.KVClient) *JobStore {
 	jobStore := &JobStore{
-		DefaultStore: NewDefaultStore(kvClient),
-		id:           id,
+		TomlStore: NewTomlStore(kvClient),
+		id:        id,
 	}
-	jobStore.DefaultStore.Store = jobStore
+	jobStore.TomlStore.Store = jobStore
 	return jobStore
 }
 
+// CreateState returns an empty Job object
 func (jobStore *JobStore) CreateState() State {
 	return &Job{}
 }
 
+// Key returns encoded key for job store id
 func (jobStore *JobStore) Key() string {
 	return adapter.DMJobKeyAdapter.Encode(jobStore.id)
 }

@@ -56,8 +56,6 @@ func (s *masterServerConn) sendRequest(ctx context.Context, req interface{}) (in
 		return s.server.SubmitJob(ctx, x)
 	case *pb.HeartbeatRequest:
 		return s.server.Heartbeat(ctx, x)
-	case *pb.TaskSchedulerRequest:
-		return s.server.ScheduleTask(ctx, x)
 	case *pb.CancelJobRequest:
 		return s.server.CancelJob(ctx, x)
 	}
@@ -66,6 +64,11 @@ func (s *masterServerConn) sendRequest(ctx context.Context, req interface{}) (in
 
 type masterServerClient struct {
 	conn Conn
+}
+
+func (c *masterServerClient) ScheduleTask(ctx context.Context, req *pb.ScheduleTaskRequest, opts ...grpc.CallOption) (*pb.ScheduleTaskResponse, error) {
+	resp, err := c.conn.sendRequest(ctx, req)
+	return resp.(*pb.ScheduleTaskResponse), err
 }
 
 func (c *masterServerClient) RegisterExecutor(ctx context.Context, req *pb.RegisterExecutorRequest, opts ...grpc.CallOption) (*pb.RegisterExecutorResponse, error) {
@@ -91,14 +94,6 @@ func (c *masterServerClient) CancelJob(ctx context.Context, req *pb.CancelJobReq
 func (c *masterServerClient) Heartbeat(ctx context.Context, req *pb.HeartbeatRequest, opts ...grpc.CallOption) (*pb.HeartbeatResponse, error) {
 	resp, err := c.conn.sendRequest(ctx, req)
 	return resp.(*pb.HeartbeatResponse), err
-}
-
-func (c *masterServerClient) ScheduleTask(ctx context.Context, req *pb.TaskSchedulerRequest, opts ...grpc.CallOption) (*pb.TaskSchedulerResponse, error) {
-	resp, err := c.conn.sendRequest(ctx, req)
-	if err != nil {
-		return nil, err
-	}
-	return resp.(*pb.TaskSchedulerResponse), nil
 }
 
 func (c *masterServerClient) RegisterMetaStore(
@@ -151,6 +146,7 @@ func (c *masterServerClient) ReportExecutorWorkload(
 	return resp.(*pb.ExecWorkloadResponse), nil
 }
 
+// NewMasterClient creates a new master client based on Conn
 func NewMasterClient(conn Conn) pb.MasterClient {
 	return &masterServerClient{conn}
 }
@@ -186,45 +182,36 @@ func (s *executorServer) dial() (Conn, error) {
 	return &executorServerConn{s}, nil
 }
 
-func (c *executorClient) SubmitBatchTasks(ctx context.Context, req *pb.SubmitBatchTasksRequest, opts ...grpc.CallOption) (*pb.SubmitBatchTasksResponse, error) {
-	resp, err := c.conn.sendRequest(ctx, req)
-	return resp.(*pb.SubmitBatchTasksResponse), err
-}
-
-func (c *executorClient) CancelBatchTasks(ctx context.Context, req *pb.CancelBatchTasksRequest, opts ...grpc.CallOption) (*pb.CancelBatchTasksResponse, error) {
-	resp, err := c.conn.sendRequest(ctx, req)
-	return resp.(*pb.CancelBatchTasksResponse), err
-}
-
-func (c *executorClient) PauseBatchTasks(ctx context.Context, req *pb.PauseBatchTasksRequest, opts ...grpc.CallOption) (*pb.PauseBatchTasksResponse, error) {
-	resp, err := c.conn.sendRequest(ctx, req)
-	return resp.(*pb.PauseBatchTasksResponse), err
-}
-
-func (c *executorClient) DispatchTask(ctx context.Context, in *pb.DispatchTaskRequest, opts ...grpc.CallOption) (*pb.DispatchTaskResponse, error) {
+func (c *executorClient) PreDispatchTask(ctx context.Context, in *pb.PreDispatchTaskRequest, opts ...grpc.CallOption) (*pb.PreDispatchTaskResponse, error) {
 	panic("implement me")
 }
 
+func (c *executorClient) ConfirmDispatchTask(ctx context.Context, in *pb.ConfirmDispatchTaskRequest, opts ...grpc.CallOption) (*pb.ConfirmDispatchTaskResponse, error) {
+	panic("implement me")
+}
+
+// Close closes executor server conn
 func (s *executorServerConn) Close() error {
 	return nil
 }
 
+// NewExecutorClient returns executor client based on Conn
 func NewExecutorClient(conn Conn) pb.ExecutorClient {
 	return &executorClient{conn}
 }
 
 func (s *executorServerConn) sendRequest(ctx context.Context, req interface{}) (interface{}, error) {
 	switch x := req.(type) {
-	case *pb.SubmitBatchTasksRequest:
-		return s.server.SubmitBatchTasks(ctx, x)
-	case *pb.CancelBatchTasksRequest:
-		return s.server.CancelBatchTasks(ctx, x)
-	case *pb.PauseBatchTasksRequest:
-		return s.server.PauseBatchTasks(ctx, x)
+	case *pb.PreDispatchTaskRequest:
+		return s.server.PreDispatchTask(ctx, x)
+	case *pb.ConfirmDispatchTaskRequest:
+		return s.server.ConfirmDispatchTask(ctx, x)
+	default:
 	}
 	return nil, errors.New("unknown request")
 }
 
+// Dial dials to gRPC server
 func Dial(addr string) (Conn, error) {
 	container.mu.Lock()
 	defer container.mu.Unlock()
@@ -249,6 +236,8 @@ func NewMasterServer(addr string, server pb.MasterServer) (GrpcServer, error) {
 	return newServer, nil
 }
 
+// NewExecutorServer returns a mock executor gRPC server for given address, if it
+// doesn't exist, create a new one
 func NewExecutorServer(addr string, server pb.ExecutorServer) (GrpcServer, error) {
 	container.mu.Lock()
 	defer container.mu.Unlock()
@@ -261,11 +250,13 @@ func NewExecutorServer(addr string, server pb.ExecutorServer) (GrpcServer, error
 	return newServer, nil
 }
 
+// Conn is a simple interface that support send gRPC requests and closeable
 type Conn interface {
 	Close() error
 	sendRequest(ctx context.Context, req interface{}) (interface{}, error)
 }
 
+// ResetGrpcCtx resets grpc servers
 func ResetGrpcCtx() {
 	container = &grpcContainer{
 		servers: make(map[string]GrpcServer),

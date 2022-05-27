@@ -5,27 +5,31 @@ import (
 	"sync"
 	"time"
 
-	"github.com/hanfei1991/microcosm/model"
-	"github.com/hanfei1991/microcosm/pb"
-	"github.com/hanfei1991/microcosm/pkg/autoid"
-	"github.com/hanfei1991/microcosm/pkg/errors"
-	"github.com/hanfei1991/microcosm/pkg/ha"
-	"github.com/hanfei1991/microcosm/servermaster/resource"
-	"github.com/hanfei1991/microcosm/test"
 	"github.com/pingcap/tiflow/dm/pkg/log"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
+
+	"github.com/hanfei1991/microcosm/model"
+	"github.com/hanfei1991/microcosm/pb"
+	"github.com/hanfei1991/microcosm/pkg/errors"
+	"github.com/hanfei1991/microcosm/pkg/uuid"
+	"github.com/hanfei1991/microcosm/servermaster/resource"
+	"github.com/hanfei1991/microcosm/servermaster/scheduler"
+	"github.com/hanfei1991/microcosm/test"
 )
 
 // ExecutorManager defines an interface to manager all executors
 type ExecutorManager interface {
 	HandleHeartbeat(req *pb.HeartbeatRequest) (*pb.HeartbeatResponse, error)
-	Allocate(tasks []*pb.ScheduleTask) (bool, *pb.TaskSchedulerResponse)
 	AllocateNewExec(req *pb.RegisterExecutorRequest) (*model.NodeInfo, error)
 	RegisterExec(info *model.NodeInfo)
 	Start(ctx context.Context)
 	// Count returns executor count with given status
 	ExecutorCount(status model.ExecutorStatus) int
+	HasExecutor(executorID string) bool
+	ListExecutors() []string
+	CapacityProvider() scheduler.CapacityProvider
+	GetAddr(executorID model.ExecutorID) (string, bool)
 }
 
 // ExecutorManagerImpl holds all the executors info, including liveness, status, resource usage.
@@ -35,22 +39,20 @@ type ExecutorManagerImpl struct {
 	mu        sync.Mutex
 	executors map[model.ExecutorID]*Executor
 
-	idAllocator       *autoid.UUIDAllocator
+	idAllocator       uuid.Generator
 	initHeartbeatTTL  time.Duration
 	keepAliveInterval time.Duration
-
-	// TODO: complete ha store.
-	haStore ha.HAStore // nolint:structcheck,unused
 
 	rescMgr resource.RescMgr
 	logRL   *rate.Limiter
 }
 
+// NewExecutorManagerImpl creates a new ExecutorManagerImpl instance
 func NewExecutorManagerImpl(initHeartbeatTTL, keepAliveInterval time.Duration, ctx *test.Context) *ExecutorManagerImpl {
 	return &ExecutorManagerImpl{
 		testContext:       ctx,
 		executors:         make(map[model.ExecutorID]*Executor),
-		idAllocator:       autoid.NewUUIDAllocator(),
+		idAllocator:       uuid.NewGenerator(),
 		initHeartbeatTTL:  initHeartbeatTTL,
 		keepAliveInterval: keepAliveInterval,
 		rescMgr:           resource.NewCapRescMgr(),
@@ -69,10 +71,6 @@ func (e *ExecutorManagerImpl) removeExecutorImpl(id model.ExecutorID) error {
 	}
 	delete(e.executors, id)
 	e.rescMgr.Unregister(id)
-	//err := e.haStore.Del(exec.EtcdKey())
-	//if err != nil {
-	//	return err
-	//}
 	log.L().Logger.Info("notify to offline exec")
 	if test.GetGlobalTestFlag() {
 		e.testContext.NotifyExecutorChange(&test.ExecutorChangeEvent{
@@ -142,7 +140,7 @@ func (e *ExecutorManagerImpl) AllocateNewExec(req *pb.RegisterExecutorRequest) (
 
 	e.mu.Lock()
 	info := &model.NodeInfo{
-		ID:         model.ExecutorID(e.idAllocator.AllocID()),
+		ID:         model.ExecutorID(e.idAllocator.NewString()),
 		Addr:       req.Address,
 		Capability: int(req.Capability),
 	}
@@ -156,8 +154,23 @@ func (e *ExecutorManagerImpl) AllocateNewExec(req *pb.RegisterExecutorRequest) (
 	return info, nil
 }
 
-func (e *ExecutorManagerImpl) Allocate(tasks []*pb.ScheduleTask) (bool, *pb.TaskSchedulerResponse) {
-	return e.rescMgr.Allocate(tasks)
+// HasExecutor implements ExecutorManager.HasExecutor
+func (e *ExecutorManagerImpl) HasExecutor(executorID string) bool {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	_, ok := e.executors[model.ExecutorID(executorID)]
+	return ok
+}
+
+// ListExecutors implements ExecutorManager.ListExecutors
+func (e *ExecutorManagerImpl) ListExecutors() []string {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	ret := make([]string, 0, len(e.executors))
+	for id := range e.executors {
+		ret = append(ret, string(id))
+	}
+	return ret
 }
 
 // Executor records the status of an executor instance.
@@ -226,7 +239,7 @@ func (e *ExecutorManagerImpl) checkAliveImpl() error {
 	return nil
 }
 
-// Count implements ExecutorManager.ExecutorCount
+// ExecutorCount implements ExecutorManager.ExecutorCount
 func (e *ExecutorManagerImpl) ExecutorCount(status model.ExecutorStatus) (count int) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -236,4 +249,22 @@ func (e *ExecutorManagerImpl) ExecutorCount(status model.ExecutorStatus) (count 
 		}
 	}
 	return
+}
+
+// CapacityProvider returns the internal rescMgr as a scheduler.CapacityProvider.
+func (e *ExecutorManagerImpl) CapacityProvider() scheduler.CapacityProvider {
+	return e.rescMgr
+}
+
+// GetAddr implements ExecutorManager.GetAddr
+func (e *ExecutorManagerImpl) GetAddr(executorID model.ExecutorID) (string, bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	executor, exists := e.executors[executorID]
+	if !exists {
+		return "", false
+	}
+
+	return executor.Addr, true
 }

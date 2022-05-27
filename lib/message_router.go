@@ -8,6 +8,7 @@ import (
 	"github.com/pingcap/tiflow/pkg/workerpool"
 	"go.uber.org/zap"
 
+	libModel "github.com/hanfei1991/microcosm/lib/model"
 	"github.com/hanfei1991/microcosm/pkg/p2p"
 )
 
@@ -21,15 +22,16 @@ type messageWrapper struct {
 // MessageRouter is a SPSC(single producer, single consumer) work model, since
 // the message frequency is not high, we use a simple channel for message transit.
 type MessageRouter struct {
-	workerID WorkerID
+	workerID libModel.WorkerID
 	buffer   chan messageWrapper
 	pool     workerpool.AsyncPool
 	errCh    chan error
 	routeFn  func(topic p2p.Topic, msg p2p.MessageValue) error
 }
 
+// NewMessageRouter creates a new MessageRouter
 func NewMessageRouter(
-	workerID WorkerID,
+	workerID libModel.WorkerID,
 	pool workerpool.AsyncPool,
 	bufferSize int,
 	routeFn func(topic p2p.Topic, msg p2p.MessageValue) error,
@@ -43,6 +45,7 @@ func NewMessageRouter(
 	}
 }
 
+// Tick should be called periodically, it receives message from buffer and route it
 func (r *MessageRouter) Tick(ctx context.Context) error {
 	select {
 	case <-ctx.Done():

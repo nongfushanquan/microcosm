@@ -27,60 +27,28 @@ var _ = math.Inf
 // proto package needs to be updated.
 const _ = proto.GoGoProtoPackageIsVersion3 // please upgrade the proto package
 
-type DispatchTaskErrorCode int32
-
-const (
-	DispatchTaskErrorCode_Unknown    DispatchTaskErrorCode = 0
-	DispatchTaskErrorCode_OK         DispatchTaskErrorCode = 1
-	DispatchTaskErrorCode_NoResource DispatchTaskErrorCode = 2
-	DispatchTaskErrorCode_InitFailed DispatchTaskErrorCode = 3
-	DispatchTaskErrorCode_Other      DispatchTaskErrorCode = 1000
-)
-
-var DispatchTaskErrorCode_name = map[int32]string{
-	0:    "Unknown",
-	1:    "OK",
-	2:    "NoResource",
-	3:    "InitFailed",
-	1000: "Other",
-}
-
-var DispatchTaskErrorCode_value = map[string]int32{
-	"Unknown":    0,
-	"OK":         1,
-	"NoResource": 2,
-	"InitFailed": 3,
-	"Other":      1000,
-}
-
-func (x DispatchTaskErrorCode) String() string {
-	return proto.EnumName(DispatchTaskErrorCode_name, int32(x))
-}
-
-func (DispatchTaskErrorCode) EnumDescriptor() ([]byte, []int) {
-	return fileDescriptor_12d1cdcda51e000f, []int{0}
-}
-
-type DispatchTaskRequest struct {
+type PreDispatchTaskRequest struct {
 	TaskTypeId int64  `protobuf:"varint,1,opt,name=task_type_id,json=taskTypeId,proto3" json:"task_type_id,omitempty"`
 	TaskConfig []byte `protobuf:"bytes,2,opt,name=task_config,json=taskConfig,proto3" json:"task_config,omitempty"`
 	MasterId   string `protobuf:"bytes,3,opt,name=master_id,json=masterId,proto3" json:"master_id,omitempty"`
 	WorkerId   string `protobuf:"bytes,4,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
 	UserId     string `protobuf:"bytes,5,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	// request_id should be a UUID unique for each RPC call.
+	RequestId string `protobuf:"bytes,6,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
 }
 
-func (m *DispatchTaskRequest) Reset()         { *m = DispatchTaskRequest{} }
-func (m *DispatchTaskRequest) String() string { return proto.CompactTextString(m) }
-func (*DispatchTaskRequest) ProtoMessage()    {}
-func (*DispatchTaskRequest) Descriptor() ([]byte, []int) {
+func (m *PreDispatchTaskRequest) Reset()         { *m = PreDispatchTaskRequest{} }
+func (m *PreDispatchTaskRequest) String() string { return proto.CompactTextString(m) }
+func (*PreDispatchTaskRequest) ProtoMessage()    {}
+func (*PreDispatchTaskRequest) Descriptor() ([]byte, []int) {
 	return fileDescriptor_12d1cdcda51e000f, []int{0}
 }
-func (m *DispatchTaskRequest) XXX_Unmarshal(b []byte) error {
+func (m *PreDispatchTaskRequest) XXX_Unmarshal(b []byte) error {
 	return m.Unmarshal(b)
 }
-func (m *DispatchTaskRequest) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+func (m *PreDispatchTaskRequest) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
 	if deterministic {
-		return xxx_messageInfo_DispatchTaskRequest.Marshal(b, m, deterministic)
+		return xxx_messageInfo_PreDispatchTaskRequest.Marshal(b, m, deterministic)
 	} else {
 		b = b[:cap(b)]
 		n, err := m.MarshalToSizedBuffer(b)
@@ -90,71 +58,75 @@ func (m *DispatchTaskRequest) XXX_Marshal(b []byte, deterministic bool) ([]byte,
 		return b[:n], nil
 	}
 }
-func (m *DispatchTaskRequest) XXX_Merge(src proto.Message) {
-	xxx_messageInfo_DispatchTaskRequest.Merge(m, src)
+func (m *PreDispatchTaskRequest) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_PreDispatchTaskRequest.Merge(m, src)
 }
-func (m *DispatchTaskRequest) XXX_Size() int {
+func (m *PreDispatchTaskRequest) XXX_Size() int {
 	return m.Size()
 }
-func (m *DispatchTaskRequest) XXX_DiscardUnknown() {
-	xxx_messageInfo_DispatchTaskRequest.DiscardUnknown(m)
+func (m *PreDispatchTaskRequest) XXX_DiscardUnknown() {
+	xxx_messageInfo_PreDispatchTaskRequest.DiscardUnknown(m)
 }
 
-var xxx_messageInfo_DispatchTaskRequest proto.InternalMessageInfo
+var xxx_messageInfo_PreDispatchTaskRequest proto.InternalMessageInfo
 
-func (m *DispatchTaskRequest) GetTaskTypeId() int64 {
+func (m *PreDispatchTaskRequest) GetTaskTypeId() int64 {
 	if m != nil {
 		return m.TaskTypeId
 	}
 	return 0
 }
 
-func (m *DispatchTaskRequest) GetTaskConfig() []byte {
+func (m *PreDispatchTaskRequest) GetTaskConfig() []byte {
 	if m != nil {
 		return m.TaskConfig
 	}
 	return nil
 }
 
-func (m *DispatchTaskRequest) GetMasterId() string {
+func (m *PreDispatchTaskRequest) GetMasterId() string {
 	if m != nil {
 		return m.MasterId
 	}
 	return ""
 }
 
-func (m *DispatchTaskRequest) GetWorkerId() string {
+func (m *PreDispatchTaskRequest) GetWorkerId() string {
 	if m != nil {
 		return m.WorkerId
 	}
 	return ""
 }
 
-func (m *DispatchTaskRequest) GetUserId() string {
+func (m *PreDispatchTaskRequest) GetUserId() string {
 	if m != nil {
 		return m.UserId
 	}
 	return ""
 }
 
-type DispatchTaskResponse struct {
-	ErrorCode    DispatchTaskErrorCode `protobuf:"varint,1,opt,name=error_code,json=errorCode,proto3,enum=pb.DispatchTaskErrorCode" json:"error_code,omitempty"`
-	ErrorMessage string                `protobuf:"bytes,2,opt,name=error_message,json=errorMessage,proto3" json:"error_message,omitempty"`
-	WorkerId     string                `protobuf:"bytes,3,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+func (m *PreDispatchTaskRequest) GetRequestId() string {
+	if m != nil {
+		return m.RequestId
+	}
+	return ""
 }
 
-func (m *DispatchTaskResponse) Reset()         { *m = DispatchTaskResponse{} }
-func (m *DispatchTaskResponse) String() string { return proto.CompactTextString(m) }
-func (*DispatchTaskResponse) ProtoMessage()    {}
-func (*DispatchTaskResponse) Descriptor() ([]byte, []int) {
+type PreDispatchTaskResponse struct {
+}
+
+func (m *PreDispatchTaskResponse) Reset()         { *m = PreDispatchTaskResponse{} }
+func (m *PreDispatchTaskResponse) String() string { return proto.CompactTextString(m) }
+func (*PreDispatchTaskResponse) ProtoMessage()    {}
+func (*PreDispatchTaskResponse) Descriptor() ([]byte, []int) {
 	return fileDescriptor_12d1cdcda51e000f, []int{1}
 }
-func (m *DispatchTaskResponse) XXX_Unmarshal(b []byte) error {
+func (m *PreDispatchTaskResponse) XXX_Unmarshal(b []byte) error {
 	return m.Unmarshal(b)
 }
-func (m *DispatchTaskResponse) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+func (m *PreDispatchTaskResponse) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
 	if deterministic {
-		return xxx_messageInfo_DispatchTaskResponse.Marshal(b, m, deterministic)
+		return xxx_messageInfo_PreDispatchTaskResponse.Marshal(b, m, deterministic)
 	} else {
 		b = b[:cap(b)]
 		n, err := m.MarshalToSizedBuffer(b)
@@ -164,99 +136,85 @@ func (m *DispatchTaskResponse) XXX_Marshal(b []byte, deterministic bool) ([]byte
 		return b[:n], nil
 	}
 }
-func (m *DispatchTaskResponse) XXX_Merge(src proto.Message) {
-	xxx_messageInfo_DispatchTaskResponse.Merge(m, src)
+func (m *PreDispatchTaskResponse) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_PreDispatchTaskResponse.Merge(m, src)
 }
-func (m *DispatchTaskResponse) XXX_Size() int {
+func (m *PreDispatchTaskResponse) XXX_Size() int {
 	return m.Size()
 }
-func (m *DispatchTaskResponse) XXX_DiscardUnknown() {
-	xxx_messageInfo_DispatchTaskResponse.DiscardUnknown(m)
+func (m *PreDispatchTaskResponse) XXX_DiscardUnknown() {
+	xxx_messageInfo_PreDispatchTaskResponse.DiscardUnknown(m)
 }
 
-var xxx_messageInfo_DispatchTaskResponse proto.InternalMessageInfo
+var xxx_messageInfo_PreDispatchTaskResponse proto.InternalMessageInfo
 
-func (m *DispatchTaskResponse) GetErrorCode() DispatchTaskErrorCode {
-	if m != nil {
-		return m.ErrorCode
+type ConfirmDispatchTaskRequest struct {
+	WorkerId  string `protobuf:"bytes,1,opt,name=worker_id,json=workerId,proto3" json:"worker_id,omitempty"`
+	RequestId string `protobuf:"bytes,2,opt,name=request_id,json=requestId,proto3" json:"request_id,omitempty"`
+}
+
+func (m *ConfirmDispatchTaskRequest) Reset()         { *m = ConfirmDispatchTaskRequest{} }
+func (m *ConfirmDispatchTaskRequest) String() string { return proto.CompactTextString(m) }
+func (*ConfirmDispatchTaskRequest) ProtoMessage()    {}
+func (*ConfirmDispatchTaskRequest) Descriptor() ([]byte, []int) {
+	return fileDescriptor_12d1cdcda51e000f, []int{2}
+}
+func (m *ConfirmDispatchTaskRequest) XXX_Unmarshal(b []byte) error {
+	return m.Unmarshal(b)
+}
+func (m *ConfirmDispatchTaskRequest) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+	if deterministic {
+		return xxx_messageInfo_ConfirmDispatchTaskRequest.Marshal(b, m, deterministic)
+	} else {
+		b = b[:cap(b)]
+		n, err := m.MarshalToSizedBuffer(b)
+		if err != nil {
+			return nil, err
+		}
+		return b[:n], nil
 	}
-	return DispatchTaskErrorCode_Unknown
+}
+func (m *ConfirmDispatchTaskRequest) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_ConfirmDispatchTaskRequest.Merge(m, src)
+}
+func (m *ConfirmDispatchTaskRequest) XXX_Size() int {
+	return m.Size()
+}
+func (m *ConfirmDispatchTaskRequest) XXX_DiscardUnknown() {
+	xxx_messageInfo_ConfirmDispatchTaskRequest.DiscardUnknown(m)
 }
 
-func (m *DispatchTaskResponse) GetErrorMessage() string {
-	if m != nil {
-		return m.ErrorMessage
-	}
-	return ""
-}
+var xxx_messageInfo_ConfirmDispatchTaskRequest proto.InternalMessageInfo
 
-func (m *DispatchTaskResponse) GetWorkerId() string {
+func (m *ConfirmDispatchTaskRequest) GetWorkerId() string {
 	if m != nil {
 		return m.WorkerId
 	}
 	return ""
 }
 
-type CancelBatchTasksRequest struct {
-	TaskIdList []int64 `protobuf:"varint,1,rep,packed,name=task_id_list,json=taskIdList,proto3" json:"task_id_list,omitempty"`
-}
-
-func (m *CancelBatchTasksRequest) Reset()         { *m = CancelBatchTasksRequest{} }
-func (m *CancelBatchTasksRequest) String() string { return proto.CompactTextString(m) }
-func (*CancelBatchTasksRequest) ProtoMessage()    {}
-func (*CancelBatchTasksRequest) Descriptor() ([]byte, []int) {
-	return fileDescriptor_12d1cdcda51e000f, []int{2}
-}
-func (m *CancelBatchTasksRequest) XXX_Unmarshal(b []byte) error {
-	return m.Unmarshal(b)
-}
-func (m *CancelBatchTasksRequest) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
-	if deterministic {
-		return xxx_messageInfo_CancelBatchTasksRequest.Marshal(b, m, deterministic)
-	} else {
-		b = b[:cap(b)]
-		n, err := m.MarshalToSizedBuffer(b)
-		if err != nil {
-			return nil, err
-		}
-		return b[:n], nil
-	}
-}
-func (m *CancelBatchTasksRequest) XXX_Merge(src proto.Message) {
-	xxx_messageInfo_CancelBatchTasksRequest.Merge(m, src)
-}
-func (m *CancelBatchTasksRequest) XXX_Size() int {
-	return m.Size()
-}
-func (m *CancelBatchTasksRequest) XXX_DiscardUnknown() {
-	xxx_messageInfo_CancelBatchTasksRequest.DiscardUnknown(m)
-}
-
-var xxx_messageInfo_CancelBatchTasksRequest proto.InternalMessageInfo
-
-func (m *CancelBatchTasksRequest) GetTaskIdList() []int64 {
+func (m *ConfirmDispatchTaskRequest) GetRequestId() string {
 	if m != nil {
-		return m.TaskIdList
+		return m.RequestId
 	}
-	return nil
+	return ""
 }
 
-type PauseBatchTasksRequest struct {
-	TaskIdList []int64 `protobuf:"varint,1,rep,packed,name=task_id_list,json=taskIdList,proto3" json:"task_id_list,omitempty"`
+type ConfirmDispatchTaskResponse struct {
 }
 
-func (m *PauseBatchTasksRequest) Reset()         { *m = PauseBatchTasksRequest{} }
-func (m *PauseBatchTasksRequest) String() string { return proto.CompactTextString(m) }
-func (*PauseBatchTasksRequest) ProtoMessage()    {}
-func (*PauseBatchTasksRequest) Descriptor() ([]byte, []int) {
+func (m *ConfirmDispatchTaskResponse) Reset()         { *m = ConfirmDispatchTaskResponse{} }
+func (m *ConfirmDispatchTaskResponse) String() string { return proto.CompactTextString(m) }
+func (*ConfirmDispatchTaskResponse) ProtoMessage()    {}
+func (*ConfirmDispatchTaskResponse) Descriptor() ([]byte, []int) {
 	return fileDescriptor_12d1cdcda51e000f, []int{3}
 }
-func (m *PauseBatchTasksRequest) XXX_Unmarshal(b []byte) error {
+func (m *ConfirmDispatchTaskResponse) XXX_Unmarshal(b []byte) error {
 	return m.Unmarshal(b)
 }
-func (m *PauseBatchTasksRequest) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+func (m *ConfirmDispatchTaskResponse) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
 	if deterministic {
-		return xxx_messageInfo_PauseBatchTasksRequest.Marshal(b, m, deterministic)
+		return xxx_messageInfo_ConfirmDispatchTaskResponse.Marshal(b, m, deterministic)
 	} else {
 		b = b[:cap(b)]
 		n, err := m.MarshalToSizedBuffer(b)
@@ -266,41 +224,35 @@ func (m *PauseBatchTasksRequest) XXX_Marshal(b []byte, deterministic bool) ([]by
 		return b[:n], nil
 	}
 }
-func (m *PauseBatchTasksRequest) XXX_Merge(src proto.Message) {
-	xxx_messageInfo_PauseBatchTasksRequest.Merge(m, src)
+func (m *ConfirmDispatchTaskResponse) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_ConfirmDispatchTaskResponse.Merge(m, src)
 }
-func (m *PauseBatchTasksRequest) XXX_Size() int {
+func (m *ConfirmDispatchTaskResponse) XXX_Size() int {
 	return m.Size()
 }
-func (m *PauseBatchTasksRequest) XXX_DiscardUnknown() {
-	xxx_messageInfo_PauseBatchTasksRequest.DiscardUnknown(m)
+func (m *ConfirmDispatchTaskResponse) XXX_DiscardUnknown() {
+	xxx_messageInfo_ConfirmDispatchTaskResponse.DiscardUnknown(m)
 }
 
-var xxx_messageInfo_PauseBatchTasksRequest proto.InternalMessageInfo
+var xxx_messageInfo_ConfirmDispatchTaskResponse proto.InternalMessageInfo
 
-func (m *PauseBatchTasksRequest) GetTaskIdList() []int64 {
-	if m != nil {
-		return m.TaskIdList
-	}
-	return nil
+type RemoveLocalResourceRequest struct {
+	ResourceId string `protobuf:"bytes,1,opt,name=resource_id,json=resourceId,proto3" json:"resource_id,omitempty"`
+	CreatorId  string `protobuf:"bytes,2,opt,name=creator_id,json=creatorId,proto3" json:"creator_id,omitempty"`
 }
 
-type SubmitBatchTasksRequest struct {
-	Tasks []*TaskRequest `protobuf:"bytes,2,rep,name=tasks,proto3" json:"tasks,omitempty"`
-}
-
-func (m *SubmitBatchTasksRequest) Reset()         { *m = SubmitBatchTasksRequest{} }
-func (m *SubmitBatchTasksRequest) String() string { return proto.CompactTextString(m) }
-func (*SubmitBatchTasksRequest) ProtoMessage()    {}
-func (*SubmitBatchTasksRequest) Descriptor() ([]byte, []int) {
+func (m *RemoveLocalResourceRequest) Reset()         { *m = RemoveLocalResourceRequest{} }
+func (m *RemoveLocalResourceRequest) String() string { return proto.CompactTextString(m) }
+func (*RemoveLocalResourceRequest) ProtoMessage()    {}
+func (*RemoveLocalResourceRequest) Descriptor() ([]byte, []int) {
 	return fileDescriptor_12d1cdcda51e000f, []int{4}
 }
-func (m *SubmitBatchTasksRequest) XXX_Unmarshal(b []byte) error {
+func (m *RemoveLocalResourceRequest) XXX_Unmarshal(b []byte) error {
 	return m.Unmarshal(b)
 }
-func (m *SubmitBatchTasksRequest) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+func (m *RemoveLocalResourceRequest) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
 	if deterministic {
-		return xxx_messageInfo_SubmitBatchTasksRequest.Marshal(b, m, deterministic)
+		return xxx_messageInfo_RemoveLocalResourceRequest.Marshal(b, m, deterministic)
 	} else {
 		b = b[:cap(b)]
 		n, err := m.MarshalToSizedBuffer(b)
@@ -310,45 +262,47 @@ func (m *SubmitBatchTasksRequest) XXX_Marshal(b []byte, deterministic bool) ([]b
 		return b[:n], nil
 	}
 }
-func (m *SubmitBatchTasksRequest) XXX_Merge(src proto.Message) {
-	xxx_messageInfo_SubmitBatchTasksRequest.Merge(m, src)
+func (m *RemoveLocalResourceRequest) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_RemoveLocalResourceRequest.Merge(m, src)
 }
-func (m *SubmitBatchTasksRequest) XXX_Size() int {
+func (m *RemoveLocalResourceRequest) XXX_Size() int {
 	return m.Size()
 }
-func (m *SubmitBatchTasksRequest) XXX_DiscardUnknown() {
-	xxx_messageInfo_SubmitBatchTasksRequest.DiscardUnknown(m)
+func (m *RemoveLocalResourceRequest) XXX_DiscardUnknown() {
+	xxx_messageInfo_RemoveLocalResourceRequest.DiscardUnknown(m)
 }
 
-var xxx_messageInfo_SubmitBatchTasksRequest proto.InternalMessageInfo
+var xxx_messageInfo_RemoveLocalResourceRequest proto.InternalMessageInfo
 
-func (m *SubmitBatchTasksRequest) GetTasks() []*TaskRequest {
+func (m *RemoveLocalResourceRequest) GetResourceId() string {
 	if m != nil {
-		return m.Tasks
+		return m.ResourceId
 	}
-	return nil
+	return ""
 }
 
-type TaskRequest struct {
-	Id      int64   `protobuf:"varint,1,opt,name=id,proto3" json:"id,omitempty"`
-	Inputs  []int64 `protobuf:"varint,2,rep,packed,name=inputs,proto3" json:"inputs,omitempty"`
-	Outputs []int64 `protobuf:"varint,3,rep,packed,name=outputs,proto3" json:"outputs,omitempty"`
-	Op      []byte  `protobuf:"bytes,4,opt,name=op,proto3" json:"op,omitempty"`
-	OpTp    int32   `protobuf:"varint,5,opt,name=op_tp,json=opTp,proto3" json:"op_tp,omitempty"`
+func (m *RemoveLocalResourceRequest) GetCreatorId() string {
+	if m != nil {
+		return m.CreatorId
+	}
+	return ""
 }
 
-func (m *TaskRequest) Reset()         { *m = TaskRequest{} }
-func (m *TaskRequest) String() string { return proto.CompactTextString(m) }
-func (*TaskRequest) ProtoMessage()    {}
-func (*TaskRequest) Descriptor() ([]byte, []int) {
+type RemoveLocalResourceResponse struct {
+}
+
+func (m *RemoveLocalResourceResponse) Reset()         { *m = RemoveLocalResourceResponse{} }
+func (m *RemoveLocalResourceResponse) String() string { return proto.CompactTextString(m) }
+func (*RemoveLocalResourceResponse) ProtoMessage()    {}
+func (*RemoveLocalResourceResponse) Descriptor() ([]byte, []int) {
 	return fileDescriptor_12d1cdcda51e000f, []int{5}
 }
-func (m *TaskRequest) XXX_Unmarshal(b []byte) error {
+func (m *RemoveLocalResourceResponse) XXX_Unmarshal(b []byte) error {
 	return m.Unmarshal(b)
 }
-func (m *TaskRequest) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
+func (m *RemoveLocalResourceResponse) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
 	if deterministic {
-		return xxx_messageInfo_TaskRequest.Marshal(b, m, deterministic)
+		return xxx_messageInfo_RemoveLocalResourceResponse.Marshal(b, m, deterministic)
 	} else {
 		b = b[:cap(b)]
 		n, err := m.MarshalToSizedBuffer(b)
@@ -358,240 +312,56 @@ func (m *TaskRequest) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) 
 		return b[:n], nil
 	}
 }
-func (m *TaskRequest) XXX_Merge(src proto.Message) {
-	xxx_messageInfo_TaskRequest.Merge(m, src)
+func (m *RemoveLocalResourceResponse) XXX_Merge(src proto.Message) {
+	xxx_messageInfo_RemoveLocalResourceResponse.Merge(m, src)
 }
-func (m *TaskRequest) XXX_Size() int {
+func (m *RemoveLocalResourceResponse) XXX_Size() int {
 	return m.Size()
 }
-func (m *TaskRequest) XXX_DiscardUnknown() {
-	xxx_messageInfo_TaskRequest.DiscardUnknown(m)
+func (m *RemoveLocalResourceResponse) XXX_DiscardUnknown() {
+	xxx_messageInfo_RemoveLocalResourceResponse.DiscardUnknown(m)
 }
 
-var xxx_messageInfo_TaskRequest proto.InternalMessageInfo
-
-func (m *TaskRequest) GetId() int64 {
-	if m != nil {
-		return m.Id
-	}
-	return 0
-}
-
-func (m *TaskRequest) GetInputs() []int64 {
-	if m != nil {
-		return m.Inputs
-	}
-	return nil
-}
-
-func (m *TaskRequest) GetOutputs() []int64 {
-	if m != nil {
-		return m.Outputs
-	}
-	return nil
-}
-
-func (m *TaskRequest) GetOp() []byte {
-	if m != nil {
-		return m.Op
-	}
-	return nil
-}
-
-func (m *TaskRequest) GetOpTp() int32 {
-	if m != nil {
-		return m.OpTp
-	}
-	return 0
-}
-
-type SubmitBatchTasksResponse struct {
-	Err *Error `protobuf:"bytes,1,opt,name=err,proto3" json:"err,omitempty"`
-}
-
-func (m *SubmitBatchTasksResponse) Reset()         { *m = SubmitBatchTasksResponse{} }
-func (m *SubmitBatchTasksResponse) String() string { return proto.CompactTextString(m) }
-func (*SubmitBatchTasksResponse) ProtoMessage()    {}
-func (*SubmitBatchTasksResponse) Descriptor() ([]byte, []int) {
-	return fileDescriptor_12d1cdcda51e000f, []int{6}
-}
-func (m *SubmitBatchTasksResponse) XXX_Unmarshal(b []byte) error {
-	return m.Unmarshal(b)
-}
-func (m *SubmitBatchTasksResponse) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
-	if deterministic {
-		return xxx_messageInfo_SubmitBatchTasksResponse.Marshal(b, m, deterministic)
-	} else {
-		b = b[:cap(b)]
-		n, err := m.MarshalToSizedBuffer(b)
-		if err != nil {
-			return nil, err
-		}
-		return b[:n], nil
-	}
-}
-func (m *SubmitBatchTasksResponse) XXX_Merge(src proto.Message) {
-	xxx_messageInfo_SubmitBatchTasksResponse.Merge(m, src)
-}
-func (m *SubmitBatchTasksResponse) XXX_Size() int {
-	return m.Size()
-}
-func (m *SubmitBatchTasksResponse) XXX_DiscardUnknown() {
-	xxx_messageInfo_SubmitBatchTasksResponse.DiscardUnknown(m)
-}
-
-var xxx_messageInfo_SubmitBatchTasksResponse proto.InternalMessageInfo
-
-func (m *SubmitBatchTasksResponse) GetErr() *Error {
-	if m != nil {
-		return m.Err
-	}
-	return nil
-}
-
-type CancelBatchTasksResponse struct {
-	Err *Error `protobuf:"bytes,1,opt,name=err,proto3" json:"err,omitempty"`
-}
-
-func (m *CancelBatchTasksResponse) Reset()         { *m = CancelBatchTasksResponse{} }
-func (m *CancelBatchTasksResponse) String() string { return proto.CompactTextString(m) }
-func (*CancelBatchTasksResponse) ProtoMessage()    {}
-func (*CancelBatchTasksResponse) Descriptor() ([]byte, []int) {
-	return fileDescriptor_12d1cdcda51e000f, []int{7}
-}
-func (m *CancelBatchTasksResponse) XXX_Unmarshal(b []byte) error {
-	return m.Unmarshal(b)
-}
-func (m *CancelBatchTasksResponse) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
-	if deterministic {
-		return xxx_messageInfo_CancelBatchTasksResponse.Marshal(b, m, deterministic)
-	} else {
-		b = b[:cap(b)]
-		n, err := m.MarshalToSizedBuffer(b)
-		if err != nil {
-			return nil, err
-		}
-		return b[:n], nil
-	}
-}
-func (m *CancelBatchTasksResponse) XXX_Merge(src proto.Message) {
-	xxx_messageInfo_CancelBatchTasksResponse.Merge(m, src)
-}
-func (m *CancelBatchTasksResponse) XXX_Size() int {
-	return m.Size()
-}
-func (m *CancelBatchTasksResponse) XXX_DiscardUnknown() {
-	xxx_messageInfo_CancelBatchTasksResponse.DiscardUnknown(m)
-}
-
-var xxx_messageInfo_CancelBatchTasksResponse proto.InternalMessageInfo
-
-func (m *CancelBatchTasksResponse) GetErr() *Error {
-	if m != nil {
-		return m.Err
-	}
-	return nil
-}
-
-type PauseBatchTasksResponse struct {
-	Err *Error `protobuf:"bytes,1,opt,name=err,proto3" json:"err,omitempty"`
-}
-
-func (m *PauseBatchTasksResponse) Reset()         { *m = PauseBatchTasksResponse{} }
-func (m *PauseBatchTasksResponse) String() string { return proto.CompactTextString(m) }
-func (*PauseBatchTasksResponse) ProtoMessage()    {}
-func (*PauseBatchTasksResponse) Descriptor() ([]byte, []int) {
-	return fileDescriptor_12d1cdcda51e000f, []int{8}
-}
-func (m *PauseBatchTasksResponse) XXX_Unmarshal(b []byte) error {
-	return m.Unmarshal(b)
-}
-func (m *PauseBatchTasksResponse) XXX_Marshal(b []byte, deterministic bool) ([]byte, error) {
-	if deterministic {
-		return xxx_messageInfo_PauseBatchTasksResponse.Marshal(b, m, deterministic)
-	} else {
-		b = b[:cap(b)]
-		n, err := m.MarshalToSizedBuffer(b)
-		if err != nil {
-			return nil, err
-		}
-		return b[:n], nil
-	}
-}
-func (m *PauseBatchTasksResponse) XXX_Merge(src proto.Message) {
-	xxx_messageInfo_PauseBatchTasksResponse.Merge(m, src)
-}
-func (m *PauseBatchTasksResponse) XXX_Size() int {
-	return m.Size()
-}
-func (m *PauseBatchTasksResponse) XXX_DiscardUnknown() {
-	xxx_messageInfo_PauseBatchTasksResponse.DiscardUnknown(m)
-}
-
-var xxx_messageInfo_PauseBatchTasksResponse proto.InternalMessageInfo
-
-func (m *PauseBatchTasksResponse) GetErr() *Error {
-	if m != nil {
-		return m.Err
-	}
-	return nil
-}
+var xxx_messageInfo_RemoveLocalResourceResponse proto.InternalMessageInfo
 
 func init() {
-	proto.RegisterEnum("pb.DispatchTaskErrorCode", DispatchTaskErrorCode_name, DispatchTaskErrorCode_value)
-	proto.RegisterType((*DispatchTaskRequest)(nil), "pb.DispatchTaskRequest")
-	proto.RegisterType((*DispatchTaskResponse)(nil), "pb.DispatchTaskResponse")
-	proto.RegisterType((*CancelBatchTasksRequest)(nil), "pb.CancelBatchTasksRequest")
-	proto.RegisterType((*PauseBatchTasksRequest)(nil), "pb.PauseBatchTasksRequest")
-	proto.RegisterType((*SubmitBatchTasksRequest)(nil), "pb.SubmitBatchTasksRequest")
-	proto.RegisterType((*TaskRequest)(nil), "pb.TaskRequest")
-	proto.RegisterType((*SubmitBatchTasksResponse)(nil), "pb.SubmitBatchTasksResponse")
-	proto.RegisterType((*CancelBatchTasksResponse)(nil), "pb.CancelBatchTasksResponse")
-	proto.RegisterType((*PauseBatchTasksResponse)(nil), "pb.PauseBatchTasksResponse")
+	proto.RegisterType((*PreDispatchTaskRequest)(nil), "pb.PreDispatchTaskRequest")
+	proto.RegisterType((*PreDispatchTaskResponse)(nil), "pb.PreDispatchTaskResponse")
+	proto.RegisterType((*ConfirmDispatchTaskRequest)(nil), "pb.ConfirmDispatchTaskRequest")
+	proto.RegisterType((*ConfirmDispatchTaskResponse)(nil), "pb.ConfirmDispatchTaskResponse")
+	proto.RegisterType((*RemoveLocalResourceRequest)(nil), "pb.RemoveLocalResourceRequest")
+	proto.RegisterType((*RemoveLocalResourceResponse)(nil), "pb.RemoveLocalResourceResponse")
 }
 
 func init() { proto.RegisterFile("executor.proto", fileDescriptor_12d1cdcda51e000f) }
 
 var fileDescriptor_12d1cdcda51e000f = []byte{
-	// 594 bytes of a gzipped FileDescriptorProto
-	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0x9c, 0x54, 0xcb, 0x6e, 0xd3, 0x40,
-	0x14, 0xf5, 0xa3, 0x49, 0x9a, 0xeb, 0x90, 0x5a, 0x53, 0x68, 0x4c, 0x82, 0x8c, 0x65, 0x84, 0x14,
-	0xb1, 0xe8, 0x22, 0x48, 0x80, 0x60, 0x83, 0x1a, 0x8a, 0x64, 0x51, 0x28, 0x32, 0x45, 0x62, 0x17,
-	0x39, 0xf6, 0xd0, 0x5a, 0x69, 0x3c, 0x83, 0x67, 0xac, 0xd2, 0xbf, 0x40, 0xfc, 0x06, 0x1f, 0xc1,
-	0x96, 0x65, 0x97, 0x2c, 0x51, 0xb2, 0xe1, 0x33, 0xd0, 0xcc, 0xc4, 0x55, 0x9e, 0x52, 0xc5, 0x2e,
-	0xf7, 0x9e, 0x7b, 0x4f, 0xce, 0x9c, 0x33, 0x63, 0x68, 0xe2, 0xaf, 0x38, 0x2e, 0x38, 0xc9, 0xf7,
-	0x69, 0x4e, 0x38, 0x41, 0x06, 0x1d, 0xb6, 0x2d, 0x9c, 0xe7, 0x65, 0xc3, 0xff, 0xa1, 0xc3, 0xee,
-	0xab, 0x94, 0xd1, 0x88, 0xc7, 0x67, 0x27, 0x11, 0x1b, 0x85, 0xf8, 0x4b, 0x81, 0x19, 0x47, 0x1e,
-	0x34, 0x78, 0xc4, 0x46, 0x03, 0x7e, 0x49, 0xf1, 0x20, 0x4d, 0x1c, 0xdd, 0xd3, 0xbb, 0x66, 0x08,
-	0xa2, 0x77, 0x72, 0x49, 0x71, 0x90, 0xa0, 0xfb, 0x60, 0xc9, 0x89, 0x98, 0x64, 0x9f, 0xd3, 0x53,
-	0xc7, 0xf0, 0xf4, 0x6e, 0x43, 0x0d, 0xf4, 0x65, 0x07, 0x75, 0xa0, 0x3e, 0x8e, 0x18, 0xc7, 0xb9,
-	0xd8, 0x37, 0x3d, 0xbd, 0x5b, 0x0f, 0xb7, 0x55, 0x23, 0x48, 0x04, 0x78, 0x41, 0xf2, 0x91, 0x02,
-	0xb7, 0x14, 0xa8, 0x1a, 0x41, 0x82, 0x5a, 0x50, 0x2b, 0x98, 0x82, 0x2a, 0x12, 0xaa, 0x8a, 0x32,
-	0x48, 0xfc, 0xef, 0x3a, 0xdc, 0x5e, 0x54, 0xcb, 0x28, 0xc9, 0x18, 0x46, 0xcf, 0x00, 0xe4, 0xa9,
-	0x06, 0x31, 0x49, 0xb0, 0x14, 0xdb, 0xec, 0xdd, 0xdd, 0xa7, 0xc3, 0xfd, 0xf9, 0xe9, 0x43, 0x31,
-	0xd1, 0x27, 0x09, 0x0e, 0xeb, 0xb8, 0xfc, 0x89, 0x1e, 0xc0, 0x2d, 0xb5, 0x39, 0xc6, 0x8c, 0x45,
-	0xa7, 0x58, 0x1e, 0xa4, 0x1e, 0x36, 0x64, 0xf3, 0xad, 0xea, 0x2d, 0xaa, 0x35, 0x17, 0xd5, 0xfa,
-	0x2f, 0xa0, 0xd5, 0x8f, 0xb2, 0x18, 0x9f, 0x1f, 0x94, 0x7f, 0xc4, 0x96, 0x5d, 0x4c, 0x93, 0xc1,
-	0x79, 0xca, 0xb8, 0xa3, 0x7b, 0x66, 0xe9, 0x62, 0x90, 0x1c, 0xa5, 0x8c, 0xfb, 0xcf, 0x61, 0xef,
-	0x7d, 0x54, 0x30, 0xfc, 0x3f, 0xbb, 0x2f, 0xa1, 0xf5, 0xa1, 0x18, 0x8e, 0x53, 0xbe, 0xba, 0xfc,
-	0x10, 0x2a, 0x62, 0x90, 0x39, 0x86, 0x67, 0x76, 0xad, 0xde, 0x8e, 0xb0, 0x62, 0x2e, 0xde, 0x50,
-	0xa1, 0x3e, 0x07, 0x6b, 0x3e, 0xf4, 0x26, 0x18, 0xd7, 0x51, 0x1b, 0x69, 0x82, 0xf6, 0xa0, 0x9a,
-	0x66, 0xb4, 0xe0, 0x8a, 0xc6, 0x0c, 0x67, 0x15, 0x72, 0xa0, 0x46, 0x0a, 0x2e, 0x01, 0x53, 0x02,
-	0x65, 0x29, 0x18, 0x08, 0x95, 0x79, 0x36, 0x42, 0x83, 0x50, 0xb4, 0x0b, 0x15, 0x42, 0x07, 0x9c,
-	0xca, 0x1c, 0x2b, 0xe1, 0x16, 0xa1, 0x27, 0xd4, 0x7f, 0x0a, 0xce, 0xaa, 0xee, 0x59, 0x90, 0x1d,
-	0x30, 0x71, 0x9e, 0x4b, 0x0d, 0x56, 0xaf, 0x2e, 0x64, 0xcb, 0xd4, 0x42, 0xd1, 0x15, 0x8b, 0xab,
-	0x4e, 0xdf, 0x64, 0xf1, 0x09, 0xb4, 0x56, 0x5c, 0xbe, 0xc1, 0xde, 0xa3, 0x4f, 0x70, 0x67, 0xed,
-	0x05, 0x42, 0x16, 0xd4, 0x3e, 0x66, 0xa3, 0x8c, 0x5c, 0x64, 0xb6, 0x86, 0xaa, 0x60, 0x1c, 0xbf,
-	0xb1, 0x75, 0xd4, 0x04, 0x78, 0x47, 0x42, 0xcc, 0x48, 0x91, 0xc7, 0xd8, 0x36, 0x44, 0x1d, 0x64,
-	0x29, 0x7f, 0x1d, 0xa5, 0xe7, 0x38, 0xb1, 0x4d, 0x04, 0x50, 0x39, 0xe6, 0x67, 0x38, 0xb7, 0xff,
-	0xd6, 0x7a, 0x3f, 0x0d, 0xd8, 0x3e, 0x9c, 0xbd, 0x4d, 0x74, 0x0c, 0xf6, 0xb2, 0x21, 0xa8, 0x23,
-	0xa4, 0x6c, 0x88, 0xb7, 0x7d, 0x6f, 0x3d, 0xa8, 0x8e, 0xe4, 0x6b, 0x82, 0x70, 0xd9, 0x28, 0x45,
-	0xb8, 0xe1, 0xa2, 0x2a, 0xc2, 0x4d, 0xde, 0xfa, 0x1a, 0x3a, 0x82, 0x9d, 0x25, 0x03, 0x51, 0x5b,
-	0xac, 0xac, 0xbf, 0xbb, 0xed, 0xce, 0x5a, 0xec, 0x9a, 0xad, 0x0f, 0x8d, 0x79, 0x5b, 0x51, 0x6b,
-	0xf9, 0xa5, 0x96, 0x3c, 0xce, 0x2a, 0x50, 0x92, 0x1c, 0x38, 0xbf, 0x26, 0xae, 0x7e, 0x35, 0x71,
-	0xf5, 0x3f, 0x13, 0x57, 0xff, 0x36, 0x75, 0xb5, 0xab, 0xa9, 0xab, 0xfd, 0x9e, 0xba, 0xda, 0xb0,
-	0x2a, 0x3f, 0x6d, 0x8f, 0xff, 0x05, 0x00, 0x00, 0xff, 0xff, 0xa5, 0x8d, 0x69, 0x63, 0xfd, 0x04,
-	0x00, 0x00,
+	// 396 bytes of a gzipped FileDescriptorProto
+	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xff, 0x7c, 0x93, 0x41, 0x6e, 0xda, 0x40,
+	0x14, 0x86, 0x3d, 0xd0, 0x52, 0x78, 0x50, 0x2a, 0x4d, 0xa5, 0x42, 0x8d, 0x30, 0x96, 0x57, 0xac,
+	0x58, 0xd0, 0x1b, 0xd0, 0x76, 0x61, 0x89, 0x45, 0x64, 0x58, 0xb0, 0x88, 0x84, 0x8c, 0xfd, 0x92,
+	0x58, 0x0e, 0x8c, 0x33, 0x33, 0x26, 0xe1, 0x16, 0x39, 0x4b, 0x4e, 0x91, 0x4d, 0x24, 0x96, 0x59,
+	0x46, 0x70, 0x91, 0xc8, 0x1e, 0x5b, 0x09, 0xc4, 0x64, 0xe9, 0xff, 0x9f, 0x79, 0xdf, 0xfb, 0x7f,
+	0xdb, 0xd0, 0xc4, 0x3b, 0xf4, 0x62, 0xc9, 0xf8, 0x20, 0xe2, 0x4c, 0x32, 0x5a, 0x8a, 0x16, 0xd6,
+	0x13, 0x81, 0x5f, 0x67, 0x1c, 0xff, 0x05, 0x22, 0x72, 0xa5, 0x77, 0x35, 0x75, 0x45, 0xe8, 0xe0,
+	0x4d, 0x8c, 0x42, 0x52, 0x13, 0x1a, 0xd2, 0x15, 0xe1, 0x5c, 0x6e, 0x22, 0x9c, 0x07, 0x7e, 0x9b,
+	0x98, 0xa4, 0x5f, 0x76, 0x20, 0xd1, 0xa6, 0x9b, 0x08, 0x6d, 0x9f, 0xf6, 0xa0, 0x9e, 0x9e, 0xf0,
+	0xd8, 0xea, 0x22, 0xb8, 0x6c, 0x97, 0x4c, 0xd2, 0x6f, 0xa8, 0x03, 0x7f, 0x53, 0x85, 0x76, 0xa0,
+	0xb6, 0x74, 0x85, 0x44, 0x9e, 0xdc, 0x2f, 0x9b, 0xa4, 0x5f, 0x73, 0xaa, 0x4a, 0xb0, 0xfd, 0xc4,
+	0xbc, 0x65, 0x3c, 0x54, 0xe6, 0x17, 0x65, 0x2a, 0xc1, 0xf6, 0x69, 0x0b, 0xbe, 0xc5, 0x42, 0x59,
+	0x5f, 0x53, 0xab, 0x92, 0x3c, 0xda, 0x3e, 0xed, 0x02, 0x70, 0xb5, 0x60, 0xe2, 0x55, 0x52, 0xaf,
+	0x96, 0x29, 0xb6, 0x6f, 0xfd, 0x86, 0xd6, 0x87, 0x38, 0x22, 0x62, 0x2b, 0x81, 0xd6, 0x0c, 0xf4,
+	0x74, 0x2d, 0xbe, 0x2c, 0x4a, 0x7b, 0xb0, 0x0d, 0x39, 0xda, 0xe6, 0x10, 0x5a, 0x3a, 0x86, 0x76,
+	0xa1, 0x53, 0x38, 0x39, 0x03, 0x9f, 0x83, 0xee, 0xe0, 0x92, 0xad, 0x71, 0xcc, 0x3c, 0xf7, 0xda,
+	0x41, 0xc1, 0x62, 0xee, 0x61, 0x0e, 0xee, 0x41, 0x9d, 0x67, 0xd2, 0x1b, 0x1a, 0x72, 0x49, 0xc1,
+	0x3d, 0x8e, 0xae, 0x64, 0xfc, 0x1d, 0x3c, 0x53, 0x14, 0xbc, 0x70, 0xba, 0x82, 0x0f, 0x1f, 0x08,
+	0x54, 0xff, 0x67, 0xef, 0x9d, 0x8e, 0xe1, 0xc7, 0x51, 0x3b, 0x54, 0x1f, 0x44, 0x8b, 0x41, 0xf1,
+	0x17, 0xa0, 0x77, 0x0a, 0xbd, 0x2c, 0x95, 0x46, 0x67, 0xf0, 0xb3, 0x20, 0x36, 0x35, 0x92, 0x5b,
+	0xa7, 0x9b, 0xd6, 0x7b, 0x27, 0xfd, 0x7c, 0xf2, 0xd0, 0x87, 0xef, 0x23, 0xce, 0x42, 0xe4, 0x13,
+	0xe4, 0xeb, 0xc0, 0x43, 0x3a, 0x81, 0xa6, 0x0a, 0x99, 0xe7, 0x53, 0x94, 0xd3, 0xb5, 0x2a, 0xca,
+	0x27, 0xc5, 0x58, 0xda, 0xa8, 0xfd, 0xb8, 0x33, 0xc8, 0x76, 0x67, 0x90, 0x97, 0x9d, 0x41, 0xee,
+	0xf7, 0x86, 0xb6, 0xdd, 0x1b, 0xda, 0xf3, 0xde, 0xd0, 0x16, 0x95, 0xf4, 0x07, 0xf9, 0xf3, 0x1a,
+	0x00, 0x00, 0xff, 0xff, 0x16, 0x16, 0x08, 0x8a, 0x32, 0x03, 0x00, 0x00,
 }
 
 // Reference imports to suppress errors if they are not otherwise used.
@@ -606,11 +376,8 @@ const _ = grpc.SupportPackageIsVersion4
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://godoc.org/google.golang.org/grpc#ClientConn.NewStream.
 type ExecutorClient interface {
-	SubmitBatchTasks(ctx context.Context, in *SubmitBatchTasksRequest, opts ...grpc.CallOption) (*SubmitBatchTasksResponse, error)
-	CancelBatchTasks(ctx context.Context, in *CancelBatchTasksRequest, opts ...grpc.CallOption) (*CancelBatchTasksResponse, error)
-	PauseBatchTasks(ctx context.Context, in *PauseBatchTasksRequest, opts ...grpc.CallOption) (*PauseBatchTasksResponse, error)
-	// The following methods are for compatibility with the master-worker framework.
-	DispatchTask(ctx context.Context, in *DispatchTaskRequest, opts ...grpc.CallOption) (*DispatchTaskResponse, error)
+	PreDispatchTask(ctx context.Context, in *PreDispatchTaskRequest, opts ...grpc.CallOption) (*PreDispatchTaskResponse, error)
+	ConfirmDispatchTask(ctx context.Context, in *ConfirmDispatchTaskRequest, opts ...grpc.CallOption) (*ConfirmDispatchTaskResponse, error)
 }
 
 type executorClient struct {
@@ -621,36 +388,18 @@ func NewExecutorClient(cc *grpc.ClientConn) ExecutorClient {
 	return &executorClient{cc}
 }
 
-func (c *executorClient) SubmitBatchTasks(ctx context.Context, in *SubmitBatchTasksRequest, opts ...grpc.CallOption) (*SubmitBatchTasksResponse, error) {
-	out := new(SubmitBatchTasksResponse)
-	err := c.cc.Invoke(ctx, "/pb.Executor/SubmitBatchTasks", in, out, opts...)
+func (c *executorClient) PreDispatchTask(ctx context.Context, in *PreDispatchTaskRequest, opts ...grpc.CallOption) (*PreDispatchTaskResponse, error) {
+	out := new(PreDispatchTaskResponse)
+	err := c.cc.Invoke(ctx, "/pb.Executor/PreDispatchTask", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
-func (c *executorClient) CancelBatchTasks(ctx context.Context, in *CancelBatchTasksRequest, opts ...grpc.CallOption) (*CancelBatchTasksResponse, error) {
-	out := new(CancelBatchTasksResponse)
-	err := c.cc.Invoke(ctx, "/pb.Executor/CancelBatchTasks", in, out, opts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *executorClient) PauseBatchTasks(ctx context.Context, in *PauseBatchTasksRequest, opts ...grpc.CallOption) (*PauseBatchTasksResponse, error) {
-	out := new(PauseBatchTasksResponse)
-	err := c.cc.Invoke(ctx, "/pb.Executor/PauseBatchTasks", in, out, opts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *executorClient) DispatchTask(ctx context.Context, in *DispatchTaskRequest, opts ...grpc.CallOption) (*DispatchTaskResponse, error) {
-	out := new(DispatchTaskResponse)
-	err := c.cc.Invoke(ctx, "/pb.Executor/DispatchTask", in, out, opts...)
+func (c *executorClient) ConfirmDispatchTask(ctx context.Context, in *ConfirmDispatchTaskRequest, opts ...grpc.CallOption) (*ConfirmDispatchTaskResponse, error) {
+	out := new(ConfirmDispatchTaskResponse)
+	err := c.cc.Invoke(ctx, "/pb.Executor/ConfirmDispatchTask", in, out, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -659,102 +408,57 @@ func (c *executorClient) DispatchTask(ctx context.Context, in *DispatchTaskReque
 
 // ExecutorServer is the server API for Executor service.
 type ExecutorServer interface {
-	SubmitBatchTasks(context.Context, *SubmitBatchTasksRequest) (*SubmitBatchTasksResponse, error)
-	CancelBatchTasks(context.Context, *CancelBatchTasksRequest) (*CancelBatchTasksResponse, error)
-	PauseBatchTasks(context.Context, *PauseBatchTasksRequest) (*PauseBatchTasksResponse, error)
-	// The following methods are for compatibility with the master-worker framework.
-	DispatchTask(context.Context, *DispatchTaskRequest) (*DispatchTaskResponse, error)
+	PreDispatchTask(context.Context, *PreDispatchTaskRequest) (*PreDispatchTaskResponse, error)
+	ConfirmDispatchTask(context.Context, *ConfirmDispatchTaskRequest) (*ConfirmDispatchTaskResponse, error)
 }
 
 // UnimplementedExecutorServer can be embedded to have forward compatible implementations.
 type UnimplementedExecutorServer struct {
 }
 
-func (*UnimplementedExecutorServer) SubmitBatchTasks(ctx context.Context, req *SubmitBatchTasksRequest) (*SubmitBatchTasksResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method SubmitBatchTasks not implemented")
+func (*UnimplementedExecutorServer) PreDispatchTask(ctx context.Context, req *PreDispatchTaskRequest) (*PreDispatchTaskResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method PreDispatchTask not implemented")
 }
-func (*UnimplementedExecutorServer) CancelBatchTasks(ctx context.Context, req *CancelBatchTasksRequest) (*CancelBatchTasksResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method CancelBatchTasks not implemented")
-}
-func (*UnimplementedExecutorServer) PauseBatchTasks(ctx context.Context, req *PauseBatchTasksRequest) (*PauseBatchTasksResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method PauseBatchTasks not implemented")
-}
-func (*UnimplementedExecutorServer) DispatchTask(ctx context.Context, req *DispatchTaskRequest) (*DispatchTaskResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method DispatchTask not implemented")
+func (*UnimplementedExecutorServer) ConfirmDispatchTask(ctx context.Context, req *ConfirmDispatchTaskRequest) (*ConfirmDispatchTaskResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ConfirmDispatchTask not implemented")
 }
 
 func RegisterExecutorServer(s *grpc.Server, srv ExecutorServer) {
 	s.RegisterService(&_Executor_serviceDesc, srv)
 }
 
-func _Executor_SubmitBatchTasks_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(SubmitBatchTasksRequest)
+func _Executor_PreDispatchTask_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(PreDispatchTaskRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(ExecutorServer).SubmitBatchTasks(ctx, in)
+		return srv.(ExecutorServer).PreDispatchTask(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: "/pb.Executor/SubmitBatchTasks",
+		FullMethod: "/pb.Executor/PreDispatchTask",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ExecutorServer).SubmitBatchTasks(ctx, req.(*SubmitBatchTasksRequest))
+		return srv.(ExecutorServer).PreDispatchTask(ctx, req.(*PreDispatchTaskRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
 
-func _Executor_CancelBatchTasks_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(CancelBatchTasksRequest)
+func _Executor_ConfirmDispatchTask_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ConfirmDispatchTaskRequest)
 	if err := dec(in); err != nil {
 		return nil, err
 	}
 	if interceptor == nil {
-		return srv.(ExecutorServer).CancelBatchTasks(ctx, in)
+		return srv.(ExecutorServer).ConfirmDispatchTask(ctx, in)
 	}
 	info := &grpc.UnaryServerInfo{
 		Server:     srv,
-		FullMethod: "/pb.Executor/CancelBatchTasks",
+		FullMethod: "/pb.Executor/ConfirmDispatchTask",
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ExecutorServer).CancelBatchTasks(ctx, req.(*CancelBatchTasksRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _Executor_PauseBatchTasks_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(PauseBatchTasksRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(ExecutorServer).PauseBatchTasks(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: "/pb.Executor/PauseBatchTasks",
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ExecutorServer).PauseBatchTasks(ctx, req.(*PauseBatchTasksRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _Executor_DispatchTask_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(DispatchTaskRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(ExecutorServer).DispatchTask(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: "/pb.Executor/DispatchTask",
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(ExecutorServer).DispatchTask(ctx, req.(*DispatchTaskRequest))
+		return srv.(ExecutorServer).ConfirmDispatchTask(ctx, req.(*ConfirmDispatchTaskRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -764,27 +468,91 @@ var _Executor_serviceDesc = grpc.ServiceDesc{
 	HandlerType: (*ExecutorServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
-			MethodName: "SubmitBatchTasks",
-			Handler:    _Executor_SubmitBatchTasks_Handler,
+			MethodName: "PreDispatchTask",
+			Handler:    _Executor_PreDispatchTask_Handler,
 		},
 		{
-			MethodName: "CancelBatchTasks",
-			Handler:    _Executor_CancelBatchTasks_Handler,
-		},
-		{
-			MethodName: "PauseBatchTasks",
-			Handler:    _Executor_PauseBatchTasks_Handler,
-		},
-		{
-			MethodName: "DispatchTask",
-			Handler:    _Executor_DispatchTask_Handler,
+			MethodName: "ConfirmDispatchTask",
+			Handler:    _Executor_ConfirmDispatchTask_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
 	Metadata: "executor.proto",
 }
 
-func (m *DispatchTaskRequest) Marshal() (dAtA []byte, err error) {
+// BrokerServiceClient is the client API for BrokerService service.
+//
+// For semantics around ctx use and closing/ending streaming RPCs, please refer to https://godoc.org/google.golang.org/grpc#ClientConn.NewStream.
+type BrokerServiceClient interface {
+	RemoveResource(ctx context.Context, in *RemoveLocalResourceRequest, opts ...grpc.CallOption) (*RemoveLocalResourceResponse, error)
+}
+
+type brokerServiceClient struct {
+	cc *grpc.ClientConn
+}
+
+func NewBrokerServiceClient(cc *grpc.ClientConn) BrokerServiceClient {
+	return &brokerServiceClient{cc}
+}
+
+func (c *brokerServiceClient) RemoveResource(ctx context.Context, in *RemoveLocalResourceRequest, opts ...grpc.CallOption) (*RemoveLocalResourceResponse, error) {
+	out := new(RemoveLocalResourceResponse)
+	err := c.cc.Invoke(ctx, "/pb.BrokerService/RemoveResource", in, out, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+// BrokerServiceServer is the server API for BrokerService service.
+type BrokerServiceServer interface {
+	RemoveResource(context.Context, *RemoveLocalResourceRequest) (*RemoveLocalResourceResponse, error)
+}
+
+// UnimplementedBrokerServiceServer can be embedded to have forward compatible implementations.
+type UnimplementedBrokerServiceServer struct {
+}
+
+func (*UnimplementedBrokerServiceServer) RemoveResource(ctx context.Context, req *RemoveLocalResourceRequest) (*RemoveLocalResourceResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RemoveResource not implemented")
+}
+
+func RegisterBrokerServiceServer(s *grpc.Server, srv BrokerServiceServer) {
+	s.RegisterService(&_BrokerService_serviceDesc, srv)
+}
+
+func _BrokerService_RemoveResource_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RemoveLocalResourceRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(BrokerServiceServer).RemoveResource(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: "/pb.BrokerService/RemoveResource",
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(BrokerServiceServer).RemoveResource(ctx, req.(*RemoveLocalResourceRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+var _BrokerService_serviceDesc = grpc.ServiceDesc{
+	ServiceName: "pb.BrokerService",
+	HandlerType: (*BrokerServiceServer)(nil),
+	Methods: []grpc.MethodDesc{
+		{
+			MethodName: "RemoveResource",
+			Handler:    _BrokerService_RemoveResource_Handler,
+		},
+	},
+	Streams:  []grpc.StreamDesc{},
+	Metadata: "executor.proto",
+}
+
+func (m *PreDispatchTaskRequest) Marshal() (dAtA []byte, err error) {
 	size := m.Size()
 	dAtA = make([]byte, size)
 	n, err := m.MarshalToSizedBuffer(dAtA[:size])
@@ -794,16 +562,23 @@ func (m *DispatchTaskRequest) Marshal() (dAtA []byte, err error) {
 	return dAtA[:n], nil
 }
 
-func (m *DispatchTaskRequest) MarshalTo(dAtA []byte) (int, error) {
+func (m *PreDispatchTaskRequest) MarshalTo(dAtA []byte) (int, error) {
 	size := m.Size()
 	return m.MarshalToSizedBuffer(dAtA[:size])
 }
 
-func (m *DispatchTaskRequest) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+func (m *PreDispatchTaskRequest) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	i := len(dAtA)
 	_ = i
 	var l int
 	_ = l
+	if len(m.RequestId) > 0 {
+		i -= len(m.RequestId)
+		copy(dAtA[i:], m.RequestId)
+		i = encodeVarintExecutor(dAtA, i, uint64(len(m.RequestId)))
+		i--
+		dAtA[i] = 0x32
+	}
 	if len(m.UserId) > 0 {
 		i -= len(m.UserId)
 		copy(dAtA[i:], m.UserId)
@@ -840,7 +615,7 @@ func (m *DispatchTaskRequest) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	return len(dAtA) - i, nil
 }
 
-func (m *DispatchTaskResponse) Marshal() (dAtA []byte, err error) {
+func (m *PreDispatchTaskResponse) Marshal() (dAtA []byte, err error) {
 	size := m.Size()
 	dAtA = make([]byte, size)
 	n, err := m.MarshalToSizedBuffer(dAtA[:size])
@@ -850,81 +625,117 @@ func (m *DispatchTaskResponse) Marshal() (dAtA []byte, err error) {
 	return dAtA[:n], nil
 }
 
-func (m *DispatchTaskResponse) MarshalTo(dAtA []byte) (int, error) {
+func (m *PreDispatchTaskResponse) MarshalTo(dAtA []byte) (int, error) {
 	size := m.Size()
 	return m.MarshalToSizedBuffer(dAtA[:size])
 }
 
-func (m *DispatchTaskResponse) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+func (m *PreDispatchTaskResponse) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	i := len(dAtA)
 	_ = i
 	var l int
 	_ = l
+	return len(dAtA) - i, nil
+}
+
+func (m *ConfirmDispatchTaskRequest) Marshal() (dAtA []byte, err error) {
+	size := m.Size()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBuffer(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *ConfirmDispatchTaskRequest) MarshalTo(dAtA []byte) (int, error) {
+	size := m.Size()
+	return m.MarshalToSizedBuffer(dAtA[:size])
+}
+
+func (m *ConfirmDispatchTaskRequest) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if len(m.RequestId) > 0 {
+		i -= len(m.RequestId)
+		copy(dAtA[i:], m.RequestId)
+		i = encodeVarintExecutor(dAtA, i, uint64(len(m.RequestId)))
+		i--
+		dAtA[i] = 0x12
+	}
 	if len(m.WorkerId) > 0 {
 		i -= len(m.WorkerId)
 		copy(dAtA[i:], m.WorkerId)
 		i = encodeVarintExecutor(dAtA, i, uint64(len(m.WorkerId)))
 		i--
-		dAtA[i] = 0x1a
+		dAtA[i] = 0xa
 	}
-	if len(m.ErrorMessage) > 0 {
-		i -= len(m.ErrorMessage)
-		copy(dAtA[i:], m.ErrorMessage)
-		i = encodeVarintExecutor(dAtA, i, uint64(len(m.ErrorMessage)))
+	return len(dAtA) - i, nil
+}
+
+func (m *ConfirmDispatchTaskResponse) Marshal() (dAtA []byte, err error) {
+	size := m.Size()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBuffer(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *ConfirmDispatchTaskResponse) MarshalTo(dAtA []byte) (int, error) {
+	size := m.Size()
+	return m.MarshalToSizedBuffer(dAtA[:size])
+}
+
+func (m *ConfirmDispatchTaskResponse) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	return len(dAtA) - i, nil
+}
+
+func (m *RemoveLocalResourceRequest) Marshal() (dAtA []byte, err error) {
+	size := m.Size()
+	dAtA = make([]byte, size)
+	n, err := m.MarshalToSizedBuffer(dAtA[:size])
+	if err != nil {
+		return nil, err
+	}
+	return dAtA[:n], nil
+}
+
+func (m *RemoveLocalResourceRequest) MarshalTo(dAtA []byte) (int, error) {
+	size := m.Size()
+	return m.MarshalToSizedBuffer(dAtA[:size])
+}
+
+func (m *RemoveLocalResourceRequest) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+	i := len(dAtA)
+	_ = i
+	var l int
+	_ = l
+	if len(m.CreatorId) > 0 {
+		i -= len(m.CreatorId)
+		copy(dAtA[i:], m.CreatorId)
+		i = encodeVarintExecutor(dAtA, i, uint64(len(m.CreatorId)))
 		i--
 		dAtA[i] = 0x12
 	}
-	if m.ErrorCode != 0 {
-		i = encodeVarintExecutor(dAtA, i, uint64(m.ErrorCode))
-		i--
-		dAtA[i] = 0x8
-	}
-	return len(dAtA) - i, nil
-}
-
-func (m *CancelBatchTasksRequest) Marshal() (dAtA []byte, err error) {
-	size := m.Size()
-	dAtA = make([]byte, size)
-	n, err := m.MarshalToSizedBuffer(dAtA[:size])
-	if err != nil {
-		return nil, err
-	}
-	return dAtA[:n], nil
-}
-
-func (m *CancelBatchTasksRequest) MarshalTo(dAtA []byte) (int, error) {
-	size := m.Size()
-	return m.MarshalToSizedBuffer(dAtA[:size])
-}
-
-func (m *CancelBatchTasksRequest) MarshalToSizedBuffer(dAtA []byte) (int, error) {
-	i := len(dAtA)
-	_ = i
-	var l int
-	_ = l
-	if len(m.TaskIdList) > 0 {
-		dAtA2 := make([]byte, len(m.TaskIdList)*10)
-		var j1 int
-		for _, num1 := range m.TaskIdList {
-			num := uint64(num1)
-			for num >= 1<<7 {
-				dAtA2[j1] = uint8(uint64(num)&0x7f | 0x80)
-				num >>= 7
-				j1++
-			}
-			dAtA2[j1] = uint8(num)
-			j1++
-		}
-		i -= j1
-		copy(dAtA[i:], dAtA2[:j1])
-		i = encodeVarintExecutor(dAtA, i, uint64(j1))
+	if len(m.ResourceId) > 0 {
+		i -= len(m.ResourceId)
+		copy(dAtA[i:], m.ResourceId)
+		i = encodeVarintExecutor(dAtA, i, uint64(len(m.ResourceId)))
 		i--
 		dAtA[i] = 0xa
 	}
 	return len(dAtA) - i, nil
 }
 
-func (m *PauseBatchTasksRequest) Marshal() (dAtA []byte, err error) {
+func (m *RemoveLocalResourceResponse) Marshal() (dAtA []byte, err error) {
 	size := m.Size()
 	dAtA = make([]byte, size)
 	n, err := m.MarshalToSizedBuffer(dAtA[:size])
@@ -934,255 +745,16 @@ func (m *PauseBatchTasksRequest) Marshal() (dAtA []byte, err error) {
 	return dAtA[:n], nil
 }
 
-func (m *PauseBatchTasksRequest) MarshalTo(dAtA []byte) (int, error) {
+func (m *RemoveLocalResourceResponse) MarshalTo(dAtA []byte) (int, error) {
 	size := m.Size()
 	return m.MarshalToSizedBuffer(dAtA[:size])
 }
 
-func (m *PauseBatchTasksRequest) MarshalToSizedBuffer(dAtA []byte) (int, error) {
+func (m *RemoveLocalResourceResponse) MarshalToSizedBuffer(dAtA []byte) (int, error) {
 	i := len(dAtA)
 	_ = i
 	var l int
 	_ = l
-	if len(m.TaskIdList) > 0 {
-		dAtA4 := make([]byte, len(m.TaskIdList)*10)
-		var j3 int
-		for _, num1 := range m.TaskIdList {
-			num := uint64(num1)
-			for num >= 1<<7 {
-				dAtA4[j3] = uint8(uint64(num)&0x7f | 0x80)
-				num >>= 7
-				j3++
-			}
-			dAtA4[j3] = uint8(num)
-			j3++
-		}
-		i -= j3
-		copy(dAtA[i:], dAtA4[:j3])
-		i = encodeVarintExecutor(dAtA, i, uint64(j3))
-		i--
-		dAtA[i] = 0xa
-	}
-	return len(dAtA) - i, nil
-}
-
-func (m *SubmitBatchTasksRequest) Marshal() (dAtA []byte, err error) {
-	size := m.Size()
-	dAtA = make([]byte, size)
-	n, err := m.MarshalToSizedBuffer(dAtA[:size])
-	if err != nil {
-		return nil, err
-	}
-	return dAtA[:n], nil
-}
-
-func (m *SubmitBatchTasksRequest) MarshalTo(dAtA []byte) (int, error) {
-	size := m.Size()
-	return m.MarshalToSizedBuffer(dAtA[:size])
-}
-
-func (m *SubmitBatchTasksRequest) MarshalToSizedBuffer(dAtA []byte) (int, error) {
-	i := len(dAtA)
-	_ = i
-	var l int
-	_ = l
-	if len(m.Tasks) > 0 {
-		for iNdEx := len(m.Tasks) - 1; iNdEx >= 0; iNdEx-- {
-			{
-				size, err := m.Tasks[iNdEx].MarshalToSizedBuffer(dAtA[:i])
-				if err != nil {
-					return 0, err
-				}
-				i -= size
-				i = encodeVarintExecutor(dAtA, i, uint64(size))
-			}
-			i--
-			dAtA[i] = 0x12
-		}
-	}
-	return len(dAtA) - i, nil
-}
-
-func (m *TaskRequest) Marshal() (dAtA []byte, err error) {
-	size := m.Size()
-	dAtA = make([]byte, size)
-	n, err := m.MarshalToSizedBuffer(dAtA[:size])
-	if err != nil {
-		return nil, err
-	}
-	return dAtA[:n], nil
-}
-
-func (m *TaskRequest) MarshalTo(dAtA []byte) (int, error) {
-	size := m.Size()
-	return m.MarshalToSizedBuffer(dAtA[:size])
-}
-
-func (m *TaskRequest) MarshalToSizedBuffer(dAtA []byte) (int, error) {
-	i := len(dAtA)
-	_ = i
-	var l int
-	_ = l
-	if m.OpTp != 0 {
-		i = encodeVarintExecutor(dAtA, i, uint64(m.OpTp))
-		i--
-		dAtA[i] = 0x28
-	}
-	if len(m.Op) > 0 {
-		i -= len(m.Op)
-		copy(dAtA[i:], m.Op)
-		i = encodeVarintExecutor(dAtA, i, uint64(len(m.Op)))
-		i--
-		dAtA[i] = 0x22
-	}
-	if len(m.Outputs) > 0 {
-		dAtA6 := make([]byte, len(m.Outputs)*10)
-		var j5 int
-		for _, num1 := range m.Outputs {
-			num := uint64(num1)
-			for num >= 1<<7 {
-				dAtA6[j5] = uint8(uint64(num)&0x7f | 0x80)
-				num >>= 7
-				j5++
-			}
-			dAtA6[j5] = uint8(num)
-			j5++
-		}
-		i -= j5
-		copy(dAtA[i:], dAtA6[:j5])
-		i = encodeVarintExecutor(dAtA, i, uint64(j5))
-		i--
-		dAtA[i] = 0x1a
-	}
-	if len(m.Inputs) > 0 {
-		dAtA8 := make([]byte, len(m.Inputs)*10)
-		var j7 int
-		for _, num1 := range m.Inputs {
-			num := uint64(num1)
-			for num >= 1<<7 {
-				dAtA8[j7] = uint8(uint64(num)&0x7f | 0x80)
-				num >>= 7
-				j7++
-			}
-			dAtA8[j7] = uint8(num)
-			j7++
-		}
-		i -= j7
-		copy(dAtA[i:], dAtA8[:j7])
-		i = encodeVarintExecutor(dAtA, i, uint64(j7))
-		i--
-		dAtA[i] = 0x12
-	}
-	if m.Id != 0 {
-		i = encodeVarintExecutor(dAtA, i, uint64(m.Id))
-		i--
-		dAtA[i] = 0x8
-	}
-	return len(dAtA) - i, nil
-}
-
-func (m *SubmitBatchTasksResponse) Marshal() (dAtA []byte, err error) {
-	size := m.Size()
-	dAtA = make([]byte, size)
-	n, err := m.MarshalToSizedBuffer(dAtA[:size])
-	if err != nil {
-		return nil, err
-	}
-	return dAtA[:n], nil
-}
-
-func (m *SubmitBatchTasksResponse) MarshalTo(dAtA []byte) (int, error) {
-	size := m.Size()
-	return m.MarshalToSizedBuffer(dAtA[:size])
-}
-
-func (m *SubmitBatchTasksResponse) MarshalToSizedBuffer(dAtA []byte) (int, error) {
-	i := len(dAtA)
-	_ = i
-	var l int
-	_ = l
-	if m.Err != nil {
-		{
-			size, err := m.Err.MarshalToSizedBuffer(dAtA[:i])
-			if err != nil {
-				return 0, err
-			}
-			i -= size
-			i = encodeVarintExecutor(dAtA, i, uint64(size))
-		}
-		i--
-		dAtA[i] = 0xa
-	}
-	return len(dAtA) - i, nil
-}
-
-func (m *CancelBatchTasksResponse) Marshal() (dAtA []byte, err error) {
-	size := m.Size()
-	dAtA = make([]byte, size)
-	n, err := m.MarshalToSizedBuffer(dAtA[:size])
-	if err != nil {
-		return nil, err
-	}
-	return dAtA[:n], nil
-}
-
-func (m *CancelBatchTasksResponse) MarshalTo(dAtA []byte) (int, error) {
-	size := m.Size()
-	return m.MarshalToSizedBuffer(dAtA[:size])
-}
-
-func (m *CancelBatchTasksResponse) MarshalToSizedBuffer(dAtA []byte) (int, error) {
-	i := len(dAtA)
-	_ = i
-	var l int
-	_ = l
-	if m.Err != nil {
-		{
-			size, err := m.Err.MarshalToSizedBuffer(dAtA[:i])
-			if err != nil {
-				return 0, err
-			}
-			i -= size
-			i = encodeVarintExecutor(dAtA, i, uint64(size))
-		}
-		i--
-		dAtA[i] = 0xa
-	}
-	return len(dAtA) - i, nil
-}
-
-func (m *PauseBatchTasksResponse) Marshal() (dAtA []byte, err error) {
-	size := m.Size()
-	dAtA = make([]byte, size)
-	n, err := m.MarshalToSizedBuffer(dAtA[:size])
-	if err != nil {
-		return nil, err
-	}
-	return dAtA[:n], nil
-}
-
-func (m *PauseBatchTasksResponse) MarshalTo(dAtA []byte) (int, error) {
-	size := m.Size()
-	return m.MarshalToSizedBuffer(dAtA[:size])
-}
-
-func (m *PauseBatchTasksResponse) MarshalToSizedBuffer(dAtA []byte) (int, error) {
-	i := len(dAtA)
-	_ = i
-	var l int
-	_ = l
-	if m.Err != nil {
-		{
-			size, err := m.Err.MarshalToSizedBuffer(dAtA[:i])
-			if err != nil {
-				return 0, err
-			}
-			i -= size
-			i = encodeVarintExecutor(dAtA, i, uint64(size))
-		}
-		i--
-		dAtA[i] = 0xa
-	}
 	return len(dAtA) - i, nil
 }
 
@@ -1197,7 +769,7 @@ func encodeVarintExecutor(dAtA []byte, offset int, v uint64) int {
 	dAtA[offset] = uint8(v)
 	return base
 }
-func (m *DispatchTaskRequest) Size() (n int) {
+func (m *PreDispatchTaskRequest) Size() (n int) {
 	if m == nil {
 		return 0
 	}
@@ -1222,145 +794,71 @@ func (m *DispatchTaskRequest) Size() (n int) {
 	if l > 0 {
 		n += 1 + l + sovExecutor(uint64(l))
 	}
+	l = len(m.RequestId)
+	if l > 0 {
+		n += 1 + l + sovExecutor(uint64(l))
+	}
 	return n
 }
 
-func (m *DispatchTaskResponse) Size() (n int) {
+func (m *PreDispatchTaskResponse) Size() (n int) {
 	if m == nil {
 		return 0
 	}
 	var l int
 	_ = l
-	if m.ErrorCode != 0 {
-		n += 1 + sovExecutor(uint64(m.ErrorCode))
+	return n
+}
+
+func (m *ConfirmDispatchTaskRequest) Size() (n int) {
+	if m == nil {
+		return 0
 	}
-	l = len(m.ErrorMessage)
-	if l > 0 {
-		n += 1 + l + sovExecutor(uint64(l))
-	}
+	var l int
+	_ = l
 	l = len(m.WorkerId)
 	if l > 0 {
 		n += 1 + l + sovExecutor(uint64(l))
 	}
-	return n
-}
-
-func (m *CancelBatchTasksRequest) Size() (n int) {
-	if m == nil {
-		return 0
-	}
-	var l int
-	_ = l
-	if len(m.TaskIdList) > 0 {
-		l = 0
-		for _, e := range m.TaskIdList {
-			l += sovExecutor(uint64(e))
-		}
-		n += 1 + sovExecutor(uint64(l)) + l
-	}
-	return n
-}
-
-func (m *PauseBatchTasksRequest) Size() (n int) {
-	if m == nil {
-		return 0
-	}
-	var l int
-	_ = l
-	if len(m.TaskIdList) > 0 {
-		l = 0
-		for _, e := range m.TaskIdList {
-			l += sovExecutor(uint64(e))
-		}
-		n += 1 + sovExecutor(uint64(l)) + l
-	}
-	return n
-}
-
-func (m *SubmitBatchTasksRequest) Size() (n int) {
-	if m == nil {
-		return 0
-	}
-	var l int
-	_ = l
-	if len(m.Tasks) > 0 {
-		for _, e := range m.Tasks {
-			l = e.Size()
-			n += 1 + l + sovExecutor(uint64(l))
-		}
-	}
-	return n
-}
-
-func (m *TaskRequest) Size() (n int) {
-	if m == nil {
-		return 0
-	}
-	var l int
-	_ = l
-	if m.Id != 0 {
-		n += 1 + sovExecutor(uint64(m.Id))
-	}
-	if len(m.Inputs) > 0 {
-		l = 0
-		for _, e := range m.Inputs {
-			l += sovExecutor(uint64(e))
-		}
-		n += 1 + sovExecutor(uint64(l)) + l
-	}
-	if len(m.Outputs) > 0 {
-		l = 0
-		for _, e := range m.Outputs {
-			l += sovExecutor(uint64(e))
-		}
-		n += 1 + sovExecutor(uint64(l)) + l
-	}
-	l = len(m.Op)
+	l = len(m.RequestId)
 	if l > 0 {
 		n += 1 + l + sovExecutor(uint64(l))
 	}
-	if m.OpTp != 0 {
-		n += 1 + sovExecutor(uint64(m.OpTp))
-	}
 	return n
 }
 
-func (m *SubmitBatchTasksResponse) Size() (n int) {
+func (m *ConfirmDispatchTaskResponse) Size() (n int) {
 	if m == nil {
 		return 0
 	}
 	var l int
 	_ = l
-	if m.Err != nil {
-		l = m.Err.Size()
-		n += 1 + l + sovExecutor(uint64(l))
-	}
 	return n
 }
 
-func (m *CancelBatchTasksResponse) Size() (n int) {
+func (m *RemoveLocalResourceRequest) Size() (n int) {
 	if m == nil {
 		return 0
 	}
 	var l int
 	_ = l
-	if m.Err != nil {
-		l = m.Err.Size()
+	l = len(m.ResourceId)
+	if l > 0 {
+		n += 1 + l + sovExecutor(uint64(l))
+	}
+	l = len(m.CreatorId)
+	if l > 0 {
 		n += 1 + l + sovExecutor(uint64(l))
 	}
 	return n
 }
 
-func (m *PauseBatchTasksResponse) Size() (n int) {
+func (m *RemoveLocalResourceResponse) Size() (n int) {
 	if m == nil {
 		return 0
 	}
 	var l int
 	_ = l
-	if m.Err != nil {
-		l = m.Err.Size()
-		n += 1 + l + sovExecutor(uint64(l))
-	}
 	return n
 }
 
@@ -1370,7 +868,7 @@ func sovExecutor(x uint64) (n int) {
 func sozExecutor(x uint64) (n int) {
 	return sovExecutor(uint64((x << 1) ^ uint64((int64(x) >> 63))))
 }
-func (m *DispatchTaskRequest) Unmarshal(dAtA []byte) error {
+func (m *PreDispatchTaskRequest) Unmarshal(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
 	for iNdEx < l {
@@ -1393,10 +891,10 @@ func (m *DispatchTaskRequest) Unmarshal(dAtA []byte) error {
 		fieldNum := int32(wire >> 3)
 		wireType := int(wire & 0x7)
 		if wireType == 4 {
-			return fmt.Errorf("proto: DispatchTaskRequest: wiretype end group for non-group")
+			return fmt.Errorf("proto: PreDispatchTaskRequest: wiretype end group for non-group")
 		}
 		if fieldNum <= 0 {
-			return fmt.Errorf("proto: DispatchTaskRequest: illegal tag %d (wire type %d)", fieldNum, wire)
+			return fmt.Errorf("proto: PreDispatchTaskRequest: illegal tag %d (wire type %d)", fieldNum, wire)
 		}
 		switch fieldNum {
 		case 1:
@@ -1548,78 +1046,9 @@ func (m *DispatchTaskRequest) Unmarshal(dAtA []byte) error {
 			}
 			m.UserId = string(dAtA[iNdEx:postIndex])
 			iNdEx = postIndex
-		default:
-			iNdEx = preIndex
-			skippy, err := skipExecutor(dAtA[iNdEx:])
-			if err != nil {
-				return err
-			}
-			if (skippy < 0) || (iNdEx+skippy) < 0 {
-				return ErrInvalidLengthExecutor
-			}
-			if (iNdEx + skippy) > l {
-				return io.ErrUnexpectedEOF
-			}
-			iNdEx += skippy
-		}
-	}
-
-	if iNdEx > l {
-		return io.ErrUnexpectedEOF
-	}
-	return nil
-}
-func (m *DispatchTaskResponse) Unmarshal(dAtA []byte) error {
-	l := len(dAtA)
-	iNdEx := 0
-	for iNdEx < l {
-		preIndex := iNdEx
-		var wire uint64
-		for shift := uint(0); ; shift += 7 {
-			if shift >= 64 {
-				return ErrIntOverflowExecutor
-			}
-			if iNdEx >= l {
-				return io.ErrUnexpectedEOF
-			}
-			b := dAtA[iNdEx]
-			iNdEx++
-			wire |= uint64(b&0x7F) << shift
-			if b < 0x80 {
-				break
-			}
-		}
-		fieldNum := int32(wire >> 3)
-		wireType := int(wire & 0x7)
-		if wireType == 4 {
-			return fmt.Errorf("proto: DispatchTaskResponse: wiretype end group for non-group")
-		}
-		if fieldNum <= 0 {
-			return fmt.Errorf("proto: DispatchTaskResponse: illegal tag %d (wire type %d)", fieldNum, wire)
-		}
-		switch fieldNum {
-		case 1:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field ErrorCode", wireType)
-			}
-			m.ErrorCode = 0
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return ErrIntOverflowExecutor
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				m.ErrorCode |= DispatchTaskErrorCode(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-		case 2:
+		case 6:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field ErrorMessage", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field RequestId", wireType)
 			}
 			var stringLen uint64
 			for shift := uint(0); ; shift += 7 {
@@ -1647,9 +1076,109 @@ func (m *DispatchTaskResponse) Unmarshal(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.ErrorMessage = string(dAtA[iNdEx:postIndex])
+			m.RequestId = string(dAtA[iNdEx:postIndex])
 			iNdEx = postIndex
-		case 3:
+		default:
+			iNdEx = preIndex
+			skippy, err := skipExecutor(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if (skippy < 0) || (iNdEx+skippy) < 0 {
+				return ErrInvalidLengthExecutor
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *PreDispatchTaskResponse) Unmarshal(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflowExecutor
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: PreDispatchTaskResponse: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: PreDispatchTaskResponse: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		default:
+			iNdEx = preIndex
+			skippy, err := skipExecutor(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if (skippy < 0) || (iNdEx+skippy) < 0 {
+				return ErrInvalidLengthExecutor
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *ConfirmDispatchTaskRequest) Unmarshal(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflowExecutor
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: ConfirmDispatchTaskRequest: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: ConfirmDispatchTaskRequest: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		case 1:
 			if wireType != 2 {
 				return fmt.Errorf("proto: wrong wireType = %d for field WorkerId", wireType)
 			}
@@ -1681,313 +1210,11 @@ func (m *DispatchTaskResponse) Unmarshal(dAtA []byte) error {
 			}
 			m.WorkerId = string(dAtA[iNdEx:postIndex])
 			iNdEx = postIndex
-		default:
-			iNdEx = preIndex
-			skippy, err := skipExecutor(dAtA[iNdEx:])
-			if err != nil {
-				return err
-			}
-			if (skippy < 0) || (iNdEx+skippy) < 0 {
-				return ErrInvalidLengthExecutor
-			}
-			if (iNdEx + skippy) > l {
-				return io.ErrUnexpectedEOF
-			}
-			iNdEx += skippy
-		}
-	}
-
-	if iNdEx > l {
-		return io.ErrUnexpectedEOF
-	}
-	return nil
-}
-func (m *CancelBatchTasksRequest) Unmarshal(dAtA []byte) error {
-	l := len(dAtA)
-	iNdEx := 0
-	for iNdEx < l {
-		preIndex := iNdEx
-		var wire uint64
-		for shift := uint(0); ; shift += 7 {
-			if shift >= 64 {
-				return ErrIntOverflowExecutor
-			}
-			if iNdEx >= l {
-				return io.ErrUnexpectedEOF
-			}
-			b := dAtA[iNdEx]
-			iNdEx++
-			wire |= uint64(b&0x7F) << shift
-			if b < 0x80 {
-				break
-			}
-		}
-		fieldNum := int32(wire >> 3)
-		wireType := int(wire & 0x7)
-		if wireType == 4 {
-			return fmt.Errorf("proto: CancelBatchTasksRequest: wiretype end group for non-group")
-		}
-		if fieldNum <= 0 {
-			return fmt.Errorf("proto: CancelBatchTasksRequest: illegal tag %d (wire type %d)", fieldNum, wire)
-		}
-		switch fieldNum {
-		case 1:
-			if wireType == 0 {
-				var v int64
-				for shift := uint(0); ; shift += 7 {
-					if shift >= 64 {
-						return ErrIntOverflowExecutor
-					}
-					if iNdEx >= l {
-						return io.ErrUnexpectedEOF
-					}
-					b := dAtA[iNdEx]
-					iNdEx++
-					v |= int64(b&0x7F) << shift
-					if b < 0x80 {
-						break
-					}
-				}
-				m.TaskIdList = append(m.TaskIdList, v)
-			} else if wireType == 2 {
-				var packedLen int
-				for shift := uint(0); ; shift += 7 {
-					if shift >= 64 {
-						return ErrIntOverflowExecutor
-					}
-					if iNdEx >= l {
-						return io.ErrUnexpectedEOF
-					}
-					b := dAtA[iNdEx]
-					iNdEx++
-					packedLen |= int(b&0x7F) << shift
-					if b < 0x80 {
-						break
-					}
-				}
-				if packedLen < 0 {
-					return ErrInvalidLengthExecutor
-				}
-				postIndex := iNdEx + packedLen
-				if postIndex < 0 {
-					return ErrInvalidLengthExecutor
-				}
-				if postIndex > l {
-					return io.ErrUnexpectedEOF
-				}
-				var elementCount int
-				var count int
-				for _, integer := range dAtA[iNdEx:postIndex] {
-					if integer < 128 {
-						count++
-					}
-				}
-				elementCount = count
-				if elementCount != 0 && len(m.TaskIdList) == 0 {
-					m.TaskIdList = make([]int64, 0, elementCount)
-				}
-				for iNdEx < postIndex {
-					var v int64
-					for shift := uint(0); ; shift += 7 {
-						if shift >= 64 {
-							return ErrIntOverflowExecutor
-						}
-						if iNdEx >= l {
-							return io.ErrUnexpectedEOF
-						}
-						b := dAtA[iNdEx]
-						iNdEx++
-						v |= int64(b&0x7F) << shift
-						if b < 0x80 {
-							break
-						}
-					}
-					m.TaskIdList = append(m.TaskIdList, v)
-				}
-			} else {
-				return fmt.Errorf("proto: wrong wireType = %d for field TaskIdList", wireType)
-			}
-		default:
-			iNdEx = preIndex
-			skippy, err := skipExecutor(dAtA[iNdEx:])
-			if err != nil {
-				return err
-			}
-			if (skippy < 0) || (iNdEx+skippy) < 0 {
-				return ErrInvalidLengthExecutor
-			}
-			if (iNdEx + skippy) > l {
-				return io.ErrUnexpectedEOF
-			}
-			iNdEx += skippy
-		}
-	}
-
-	if iNdEx > l {
-		return io.ErrUnexpectedEOF
-	}
-	return nil
-}
-func (m *PauseBatchTasksRequest) Unmarshal(dAtA []byte) error {
-	l := len(dAtA)
-	iNdEx := 0
-	for iNdEx < l {
-		preIndex := iNdEx
-		var wire uint64
-		for shift := uint(0); ; shift += 7 {
-			if shift >= 64 {
-				return ErrIntOverflowExecutor
-			}
-			if iNdEx >= l {
-				return io.ErrUnexpectedEOF
-			}
-			b := dAtA[iNdEx]
-			iNdEx++
-			wire |= uint64(b&0x7F) << shift
-			if b < 0x80 {
-				break
-			}
-		}
-		fieldNum := int32(wire >> 3)
-		wireType := int(wire & 0x7)
-		if wireType == 4 {
-			return fmt.Errorf("proto: PauseBatchTasksRequest: wiretype end group for non-group")
-		}
-		if fieldNum <= 0 {
-			return fmt.Errorf("proto: PauseBatchTasksRequest: illegal tag %d (wire type %d)", fieldNum, wire)
-		}
-		switch fieldNum {
-		case 1:
-			if wireType == 0 {
-				var v int64
-				for shift := uint(0); ; shift += 7 {
-					if shift >= 64 {
-						return ErrIntOverflowExecutor
-					}
-					if iNdEx >= l {
-						return io.ErrUnexpectedEOF
-					}
-					b := dAtA[iNdEx]
-					iNdEx++
-					v |= int64(b&0x7F) << shift
-					if b < 0x80 {
-						break
-					}
-				}
-				m.TaskIdList = append(m.TaskIdList, v)
-			} else if wireType == 2 {
-				var packedLen int
-				for shift := uint(0); ; shift += 7 {
-					if shift >= 64 {
-						return ErrIntOverflowExecutor
-					}
-					if iNdEx >= l {
-						return io.ErrUnexpectedEOF
-					}
-					b := dAtA[iNdEx]
-					iNdEx++
-					packedLen |= int(b&0x7F) << shift
-					if b < 0x80 {
-						break
-					}
-				}
-				if packedLen < 0 {
-					return ErrInvalidLengthExecutor
-				}
-				postIndex := iNdEx + packedLen
-				if postIndex < 0 {
-					return ErrInvalidLengthExecutor
-				}
-				if postIndex > l {
-					return io.ErrUnexpectedEOF
-				}
-				var elementCount int
-				var count int
-				for _, integer := range dAtA[iNdEx:postIndex] {
-					if integer < 128 {
-						count++
-					}
-				}
-				elementCount = count
-				if elementCount != 0 && len(m.TaskIdList) == 0 {
-					m.TaskIdList = make([]int64, 0, elementCount)
-				}
-				for iNdEx < postIndex {
-					var v int64
-					for shift := uint(0); ; shift += 7 {
-						if shift >= 64 {
-							return ErrIntOverflowExecutor
-						}
-						if iNdEx >= l {
-							return io.ErrUnexpectedEOF
-						}
-						b := dAtA[iNdEx]
-						iNdEx++
-						v |= int64(b&0x7F) << shift
-						if b < 0x80 {
-							break
-						}
-					}
-					m.TaskIdList = append(m.TaskIdList, v)
-				}
-			} else {
-				return fmt.Errorf("proto: wrong wireType = %d for field TaskIdList", wireType)
-			}
-		default:
-			iNdEx = preIndex
-			skippy, err := skipExecutor(dAtA[iNdEx:])
-			if err != nil {
-				return err
-			}
-			if (skippy < 0) || (iNdEx+skippy) < 0 {
-				return ErrInvalidLengthExecutor
-			}
-			if (iNdEx + skippy) > l {
-				return io.ErrUnexpectedEOF
-			}
-			iNdEx += skippy
-		}
-	}
-
-	if iNdEx > l {
-		return io.ErrUnexpectedEOF
-	}
-	return nil
-}
-func (m *SubmitBatchTasksRequest) Unmarshal(dAtA []byte) error {
-	l := len(dAtA)
-	iNdEx := 0
-	for iNdEx < l {
-		preIndex := iNdEx
-		var wire uint64
-		for shift := uint(0); ; shift += 7 {
-			if shift >= 64 {
-				return ErrIntOverflowExecutor
-			}
-			if iNdEx >= l {
-				return io.ErrUnexpectedEOF
-			}
-			b := dAtA[iNdEx]
-			iNdEx++
-			wire |= uint64(b&0x7F) << shift
-			if b < 0x80 {
-				break
-			}
-		}
-		fieldNum := int32(wire >> 3)
-		wireType := int(wire & 0x7)
-		if wireType == 4 {
-			return fmt.Errorf("proto: SubmitBatchTasksRequest: wiretype end group for non-group")
-		}
-		if fieldNum <= 0 {
-			return fmt.Errorf("proto: SubmitBatchTasksRequest: illegal tag %d (wire type %d)", fieldNum, wire)
-		}
-		switch fieldNum {
 		case 2:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Tasks", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field RequestId", wireType)
 			}
-			var msglen int
+			var stringLen uint64
 			for shift := uint(0); ; shift += 7 {
 				if shift >= 64 {
 					return ErrIntOverflowExecutor
@@ -1997,25 +1224,23 @@ func (m *SubmitBatchTasksRequest) Unmarshal(dAtA []byte) error {
 				}
 				b := dAtA[iNdEx]
 				iNdEx++
-				msglen |= int(b&0x7F) << shift
+				stringLen |= uint64(b&0x7F) << shift
 				if b < 0x80 {
 					break
 				}
 			}
-			if msglen < 0 {
+			intStringLen := int(stringLen)
+			if intStringLen < 0 {
 				return ErrInvalidLengthExecutor
 			}
-			postIndex := iNdEx + msglen
+			postIndex := iNdEx + intStringLen
 			if postIndex < 0 {
 				return ErrInvalidLengthExecutor
 			}
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.Tasks = append(m.Tasks, &TaskRequest{})
-			if err := m.Tasks[len(m.Tasks)-1].Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
-				return err
-			}
+			m.RequestId = string(dAtA[iNdEx:postIndex])
 			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
@@ -2038,7 +1263,7 @@ func (m *SubmitBatchTasksRequest) Unmarshal(dAtA []byte) error {
 	}
 	return nil
 }
-func (m *TaskRequest) Unmarshal(dAtA []byte) error {
+func (m *ConfirmDispatchTaskResponse) Unmarshal(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
 	for iNdEx < l {
@@ -2061,17 +1286,67 @@ func (m *TaskRequest) Unmarshal(dAtA []byte) error {
 		fieldNum := int32(wire >> 3)
 		wireType := int(wire & 0x7)
 		if wireType == 4 {
-			return fmt.Errorf("proto: TaskRequest: wiretype end group for non-group")
+			return fmt.Errorf("proto: ConfirmDispatchTaskResponse: wiretype end group for non-group")
 		}
 		if fieldNum <= 0 {
-			return fmt.Errorf("proto: TaskRequest: illegal tag %d (wire type %d)", fieldNum, wire)
+			return fmt.Errorf("proto: ConfirmDispatchTaskResponse: illegal tag %d (wire type %d)", fieldNum, wire)
+		}
+		switch fieldNum {
+		default:
+			iNdEx = preIndex
+			skippy, err := skipExecutor(dAtA[iNdEx:])
+			if err != nil {
+				return err
+			}
+			if (skippy < 0) || (iNdEx+skippy) < 0 {
+				return ErrInvalidLengthExecutor
+			}
+			if (iNdEx + skippy) > l {
+				return io.ErrUnexpectedEOF
+			}
+			iNdEx += skippy
+		}
+	}
+
+	if iNdEx > l {
+		return io.ErrUnexpectedEOF
+	}
+	return nil
+}
+func (m *RemoveLocalResourceRequest) Unmarshal(dAtA []byte) error {
+	l := len(dAtA)
+	iNdEx := 0
+	for iNdEx < l {
+		preIndex := iNdEx
+		var wire uint64
+		for shift := uint(0); ; shift += 7 {
+			if shift >= 64 {
+				return ErrIntOverflowExecutor
+			}
+			if iNdEx >= l {
+				return io.ErrUnexpectedEOF
+			}
+			b := dAtA[iNdEx]
+			iNdEx++
+			wire |= uint64(b&0x7F) << shift
+			if b < 0x80 {
+				break
+			}
+		}
+		fieldNum := int32(wire >> 3)
+		wireType := int(wire & 0x7)
+		if wireType == 4 {
+			return fmt.Errorf("proto: RemoveLocalResourceRequest: wiretype end group for non-group")
+		}
+		if fieldNum <= 0 {
+			return fmt.Errorf("proto: RemoveLocalResourceRequest: illegal tag %d (wire type %d)", fieldNum, wire)
 		}
 		switch fieldNum {
 		case 1:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Id", wireType)
+			if wireType != 2 {
+				return fmt.Errorf("proto: wrong wireType = %d for field ResourceId", wireType)
 			}
-			m.Id = 0
+			var stringLen uint64
 			for shift := uint(0); ; shift += 7 {
 				if shift >= 64 {
 					return ErrIntOverflowExecutor
@@ -2081,168 +1356,29 @@ func (m *TaskRequest) Unmarshal(dAtA []byte) error {
 				}
 				b := dAtA[iNdEx]
 				iNdEx++
-				m.Id |= int64(b&0x7F) << shift
+				stringLen |= uint64(b&0x7F) << shift
 				if b < 0x80 {
 					break
 				}
 			}
+			intStringLen := int(stringLen)
+			if intStringLen < 0 {
+				return ErrInvalidLengthExecutor
+			}
+			postIndex := iNdEx + intStringLen
+			if postIndex < 0 {
+				return ErrInvalidLengthExecutor
+			}
+			if postIndex > l {
+				return io.ErrUnexpectedEOF
+			}
+			m.ResourceId = string(dAtA[iNdEx:postIndex])
+			iNdEx = postIndex
 		case 2:
-			if wireType == 0 {
-				var v int64
-				for shift := uint(0); ; shift += 7 {
-					if shift >= 64 {
-						return ErrIntOverflowExecutor
-					}
-					if iNdEx >= l {
-						return io.ErrUnexpectedEOF
-					}
-					b := dAtA[iNdEx]
-					iNdEx++
-					v |= int64(b&0x7F) << shift
-					if b < 0x80 {
-						break
-					}
-				}
-				m.Inputs = append(m.Inputs, v)
-			} else if wireType == 2 {
-				var packedLen int
-				for shift := uint(0); ; shift += 7 {
-					if shift >= 64 {
-						return ErrIntOverflowExecutor
-					}
-					if iNdEx >= l {
-						return io.ErrUnexpectedEOF
-					}
-					b := dAtA[iNdEx]
-					iNdEx++
-					packedLen |= int(b&0x7F) << shift
-					if b < 0x80 {
-						break
-					}
-				}
-				if packedLen < 0 {
-					return ErrInvalidLengthExecutor
-				}
-				postIndex := iNdEx + packedLen
-				if postIndex < 0 {
-					return ErrInvalidLengthExecutor
-				}
-				if postIndex > l {
-					return io.ErrUnexpectedEOF
-				}
-				var elementCount int
-				var count int
-				for _, integer := range dAtA[iNdEx:postIndex] {
-					if integer < 128 {
-						count++
-					}
-				}
-				elementCount = count
-				if elementCount != 0 && len(m.Inputs) == 0 {
-					m.Inputs = make([]int64, 0, elementCount)
-				}
-				for iNdEx < postIndex {
-					var v int64
-					for shift := uint(0); ; shift += 7 {
-						if shift >= 64 {
-							return ErrIntOverflowExecutor
-						}
-						if iNdEx >= l {
-							return io.ErrUnexpectedEOF
-						}
-						b := dAtA[iNdEx]
-						iNdEx++
-						v |= int64(b&0x7F) << shift
-						if b < 0x80 {
-							break
-						}
-					}
-					m.Inputs = append(m.Inputs, v)
-				}
-			} else {
-				return fmt.Errorf("proto: wrong wireType = %d for field Inputs", wireType)
-			}
-		case 3:
-			if wireType == 0 {
-				var v int64
-				for shift := uint(0); ; shift += 7 {
-					if shift >= 64 {
-						return ErrIntOverflowExecutor
-					}
-					if iNdEx >= l {
-						return io.ErrUnexpectedEOF
-					}
-					b := dAtA[iNdEx]
-					iNdEx++
-					v |= int64(b&0x7F) << shift
-					if b < 0x80 {
-						break
-					}
-				}
-				m.Outputs = append(m.Outputs, v)
-			} else if wireType == 2 {
-				var packedLen int
-				for shift := uint(0); ; shift += 7 {
-					if shift >= 64 {
-						return ErrIntOverflowExecutor
-					}
-					if iNdEx >= l {
-						return io.ErrUnexpectedEOF
-					}
-					b := dAtA[iNdEx]
-					iNdEx++
-					packedLen |= int(b&0x7F) << shift
-					if b < 0x80 {
-						break
-					}
-				}
-				if packedLen < 0 {
-					return ErrInvalidLengthExecutor
-				}
-				postIndex := iNdEx + packedLen
-				if postIndex < 0 {
-					return ErrInvalidLengthExecutor
-				}
-				if postIndex > l {
-					return io.ErrUnexpectedEOF
-				}
-				var elementCount int
-				var count int
-				for _, integer := range dAtA[iNdEx:postIndex] {
-					if integer < 128 {
-						count++
-					}
-				}
-				elementCount = count
-				if elementCount != 0 && len(m.Outputs) == 0 {
-					m.Outputs = make([]int64, 0, elementCount)
-				}
-				for iNdEx < postIndex {
-					var v int64
-					for shift := uint(0); ; shift += 7 {
-						if shift >= 64 {
-							return ErrIntOverflowExecutor
-						}
-						if iNdEx >= l {
-							return io.ErrUnexpectedEOF
-						}
-						b := dAtA[iNdEx]
-						iNdEx++
-						v |= int64(b&0x7F) << shift
-						if b < 0x80 {
-							break
-						}
-					}
-					m.Outputs = append(m.Outputs, v)
-				}
-			} else {
-				return fmt.Errorf("proto: wrong wireType = %d for field Outputs", wireType)
-			}
-		case 4:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Op", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field CreatorId", wireType)
 			}
-			var byteLen int
+			var stringLen uint64
 			for shift := uint(0); ; shift += 7 {
 				if shift >= 64 {
 					return ErrIntOverflowExecutor
@@ -2252,130 +1388,23 @@ func (m *TaskRequest) Unmarshal(dAtA []byte) error {
 				}
 				b := dAtA[iNdEx]
 				iNdEx++
-				byteLen |= int(b&0x7F) << shift
+				stringLen |= uint64(b&0x7F) << shift
 				if b < 0x80 {
 					break
 				}
 			}
-			if byteLen < 0 {
+			intStringLen := int(stringLen)
+			if intStringLen < 0 {
 				return ErrInvalidLengthExecutor
 			}
-			postIndex := iNdEx + byteLen
+			postIndex := iNdEx + intStringLen
 			if postIndex < 0 {
 				return ErrInvalidLengthExecutor
 			}
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.Op = append(m.Op[:0], dAtA[iNdEx:postIndex]...)
-			if m.Op == nil {
-				m.Op = []byte{}
-			}
-			iNdEx = postIndex
-		case 5:
-			if wireType != 0 {
-				return fmt.Errorf("proto: wrong wireType = %d for field OpTp", wireType)
-			}
-			m.OpTp = 0
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return ErrIntOverflowExecutor
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				m.OpTp |= int32(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-		default:
-			iNdEx = preIndex
-			skippy, err := skipExecutor(dAtA[iNdEx:])
-			if err != nil {
-				return err
-			}
-			if (skippy < 0) || (iNdEx+skippy) < 0 {
-				return ErrInvalidLengthExecutor
-			}
-			if (iNdEx + skippy) > l {
-				return io.ErrUnexpectedEOF
-			}
-			iNdEx += skippy
-		}
-	}
-
-	if iNdEx > l {
-		return io.ErrUnexpectedEOF
-	}
-	return nil
-}
-func (m *SubmitBatchTasksResponse) Unmarshal(dAtA []byte) error {
-	l := len(dAtA)
-	iNdEx := 0
-	for iNdEx < l {
-		preIndex := iNdEx
-		var wire uint64
-		for shift := uint(0); ; shift += 7 {
-			if shift >= 64 {
-				return ErrIntOverflowExecutor
-			}
-			if iNdEx >= l {
-				return io.ErrUnexpectedEOF
-			}
-			b := dAtA[iNdEx]
-			iNdEx++
-			wire |= uint64(b&0x7F) << shift
-			if b < 0x80 {
-				break
-			}
-		}
-		fieldNum := int32(wire >> 3)
-		wireType := int(wire & 0x7)
-		if wireType == 4 {
-			return fmt.Errorf("proto: SubmitBatchTasksResponse: wiretype end group for non-group")
-		}
-		if fieldNum <= 0 {
-			return fmt.Errorf("proto: SubmitBatchTasksResponse: illegal tag %d (wire type %d)", fieldNum, wire)
-		}
-		switch fieldNum {
-		case 1:
-			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Err", wireType)
-			}
-			var msglen int
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return ErrIntOverflowExecutor
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				msglen |= int(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			if msglen < 0 {
-				return ErrInvalidLengthExecutor
-			}
-			postIndex := iNdEx + msglen
-			if postIndex < 0 {
-				return ErrInvalidLengthExecutor
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			if m.Err == nil {
-				m.Err = &Error{}
-			}
-			if err := m.Err.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
-				return err
-			}
+			m.CreatorId = string(dAtA[iNdEx:postIndex])
 			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
@@ -2398,7 +1427,7 @@ func (m *SubmitBatchTasksResponse) Unmarshal(dAtA []byte) error {
 	}
 	return nil
 }
-func (m *CancelBatchTasksResponse) Unmarshal(dAtA []byte) error {
+func (m *RemoveLocalResourceResponse) Unmarshal(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
 	for iNdEx < l {
@@ -2421,134 +1450,12 @@ func (m *CancelBatchTasksResponse) Unmarshal(dAtA []byte) error {
 		fieldNum := int32(wire >> 3)
 		wireType := int(wire & 0x7)
 		if wireType == 4 {
-			return fmt.Errorf("proto: CancelBatchTasksResponse: wiretype end group for non-group")
+			return fmt.Errorf("proto: RemoveLocalResourceResponse: wiretype end group for non-group")
 		}
 		if fieldNum <= 0 {
-			return fmt.Errorf("proto: CancelBatchTasksResponse: illegal tag %d (wire type %d)", fieldNum, wire)
+			return fmt.Errorf("proto: RemoveLocalResourceResponse: illegal tag %d (wire type %d)", fieldNum, wire)
 		}
 		switch fieldNum {
-		case 1:
-			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Err", wireType)
-			}
-			var msglen int
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return ErrIntOverflowExecutor
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				msglen |= int(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			if msglen < 0 {
-				return ErrInvalidLengthExecutor
-			}
-			postIndex := iNdEx + msglen
-			if postIndex < 0 {
-				return ErrInvalidLengthExecutor
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			if m.Err == nil {
-				m.Err = &Error{}
-			}
-			if err := m.Err.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
-				return err
-			}
-			iNdEx = postIndex
-		default:
-			iNdEx = preIndex
-			skippy, err := skipExecutor(dAtA[iNdEx:])
-			if err != nil {
-				return err
-			}
-			if (skippy < 0) || (iNdEx+skippy) < 0 {
-				return ErrInvalidLengthExecutor
-			}
-			if (iNdEx + skippy) > l {
-				return io.ErrUnexpectedEOF
-			}
-			iNdEx += skippy
-		}
-	}
-
-	if iNdEx > l {
-		return io.ErrUnexpectedEOF
-	}
-	return nil
-}
-func (m *PauseBatchTasksResponse) Unmarshal(dAtA []byte) error {
-	l := len(dAtA)
-	iNdEx := 0
-	for iNdEx < l {
-		preIndex := iNdEx
-		var wire uint64
-		for shift := uint(0); ; shift += 7 {
-			if shift >= 64 {
-				return ErrIntOverflowExecutor
-			}
-			if iNdEx >= l {
-				return io.ErrUnexpectedEOF
-			}
-			b := dAtA[iNdEx]
-			iNdEx++
-			wire |= uint64(b&0x7F) << shift
-			if b < 0x80 {
-				break
-			}
-		}
-		fieldNum := int32(wire >> 3)
-		wireType := int(wire & 0x7)
-		if wireType == 4 {
-			return fmt.Errorf("proto: PauseBatchTasksResponse: wiretype end group for non-group")
-		}
-		if fieldNum <= 0 {
-			return fmt.Errorf("proto: PauseBatchTasksResponse: illegal tag %d (wire type %d)", fieldNum, wire)
-		}
-		switch fieldNum {
-		case 1:
-			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Err", wireType)
-			}
-			var msglen int
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return ErrIntOverflowExecutor
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				msglen |= int(b&0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			if msglen < 0 {
-				return ErrInvalidLengthExecutor
-			}
-			postIndex := iNdEx + msglen
-			if postIndex < 0 {
-				return ErrInvalidLengthExecutor
-			}
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			if m.Err == nil {
-				m.Err = &Error{}
-			}
-			if err := m.Err.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
-				return err
-			}
-			iNdEx = postIndex
 		default:
 			iNdEx = preIndex
 			skippy, err := skipExecutor(dAtA[iNdEx:])

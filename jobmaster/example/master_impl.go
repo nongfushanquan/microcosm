@@ -26,7 +26,7 @@ type exampleMaster struct {
 	worker struct {
 		mu sync.Mutex
 
-		id          lib.WorkerID
+		id          libModel.WorkerID
 		handle      lib.WorkerHandle
 		online      bool
 		statusCode  libModel.WorkerStatusCode
@@ -76,6 +76,7 @@ func (e *exampleMaster) OnWorkerDispatched(worker lib.WorkerHandle, result error
 func (e *exampleMaster) OnWorkerOnline(worker lib.WorkerHandle) error {
 	log.L().Info("OnWorkerOnline")
 	e.worker.mu.Lock()
+	e.worker.handle = worker
 	e.worker.online = true
 	e.worker.mu.Unlock()
 	return nil

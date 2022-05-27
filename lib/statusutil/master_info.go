@@ -1,39 +1,43 @@
 package statusutil
 
 import (
+	"context"
 	"sync"
 
-	"github.com/hanfei1991/microcosm/pkg/p2p"
-)
+	"go.uber.org/atomic"
 
-type (
-	MasterID = string
-	WorkerID = string
-	Epoch    = int64
+	libModel "github.com/hanfei1991/microcosm/lib/model"
+	"github.com/hanfei1991/microcosm/pkg/p2p"
 )
 
 // MasterInfoProvider is an object that can provide necessary
 // information so that the Writer can contact the master.
 type MasterInfoProvider interface {
-	MasterID() MasterID
+	MasterID() libModel.MasterID
 	MasterNode() p2p.NodeID
-	Epoch() Epoch
+	Epoch() libModel.Epoch
+	RefreshMasterInfo(ctx context.Context) error
 }
 
+// MockMasterInfoProvider defines a mock provider that implements MasterInfoProvider
 type MockMasterInfoProvider struct {
 	mu         sync.RWMutex
-	masterID   MasterID
+	masterID   libModel.MasterID
 	masterNode p2p.NodeID
-	epoch      Epoch
+	epoch      libModel.Epoch
+
+	refreshCount atomic.Int64
 }
 
-func (p *MockMasterInfoProvider) MasterID() MasterID {
+// MasterID implements MasterInfoProvider.MasterID
+func (p *MockMasterInfoProvider) MasterID() libModel.MasterID {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
 	return p.masterID
 }
 
+// MasterNode implements MasterInfoProvider.MasterNode
 func (p *MockMasterInfoProvider) MasterNode() p2p.NodeID {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
@@ -41,18 +45,31 @@ func (p *MockMasterInfoProvider) MasterNode() p2p.NodeID {
 	return p.masterNode
 }
 
-func (p *MockMasterInfoProvider) Epoch() Epoch {
+// Epoch implements MasterInfoProvider.Epoch
+func (p *MockMasterInfoProvider) Epoch() libModel.Epoch {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
 	return p.epoch
 }
 
-func (p *MockMasterInfoProvider) Set(masterID MasterID, masterNode p2p.NodeID, epoch Epoch) {
+// RefreshMasterInfo implements MasterInfoProvider.RefreshMasterInfo
+func (p *MockMasterInfoProvider) RefreshMasterInfo(ctx context.Context) error {
+	p.refreshCount.Add(1)
+	return nil
+}
+
+// Set sets given information to the MockMasterInfoProvider
+func (p *MockMasterInfoProvider) Set(masterID libModel.MasterID, masterNode p2p.NodeID, epoch libModel.Epoch) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	p.masterID = masterID
 	p.masterNode = masterNode
 	p.epoch = epoch
+}
+
+// RefreshCount returns refresh time, it is used in unit test only
+func (p *MockMasterInfoProvider) RefreshCount() int {
+	return int(p.refreshCount.Load())
 }

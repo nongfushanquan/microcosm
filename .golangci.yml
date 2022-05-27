@@ -40,7 +40,7 @@ linters-settings:
       - name: var-naming
       - name: package-comments
       - name: range
-      - name: receiver-naming
+#      - name: receiver-naming TODO disable it because it can't handle generics
       - name: indent-error-flow
       - name: superfluous-else
       - name: modifies-parameter
@@ -75,5 +75,9 @@ issues:
         - errcheck
         - gosec
         - makezero
+  include:
+    - EXC0012 # exported (.+) should have comment( \(or a comment on this block\))? or be unexported)
+    - EXC0014 # comment on exported (.+) should be of the form "(.+)..."
+
 run:
   go: 1.18

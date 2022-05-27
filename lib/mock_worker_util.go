@@ -9,36 +9,43 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	libModel "github.com/hanfei1991/microcosm/lib/model"
 	"github.com/hanfei1991/microcosm/lib/statusutil"
 	dcontext "github.com/hanfei1991/microcosm/pkg/context"
 	"github.com/hanfei1991/microcosm/pkg/deps"
 	"github.com/hanfei1991/microcosm/pkg/externalresource/broker"
 	mockkv "github.com/hanfei1991/microcosm/pkg/meta/kvclient/mock"
+	pkgOrm "github.com/hanfei1991/microcosm/pkg/orm"
 	"github.com/hanfei1991/microcosm/pkg/p2p"
 )
 
+// BaseWorkerForTesting mocks base worker
 type BaseWorkerForTesting struct {
 	*DefaultBaseWorker
 	Broker *broker.LocalBroker
 }
 
+// MockBaseWorker creates a mock base worker for test
 func MockBaseWorker(
-	workerID WorkerID,
-	masterID MasterID,
+	workerID libModel.WorkerID,
+	masterID libModel.MasterID,
 	workerImpl WorkerImpl,
 ) *BaseWorkerForTesting {
 	ctx := dcontext.Background()
 	dp := deps.NewDeps()
-
+	cli, err := pkgOrm.NewMockClient()
+	if err != nil {
+		panic(err)
+	}
 	resourceBroker := broker.NewBrokerForTesting("executor-1")
 	params := workerParamListForTest{
 		MessageHandlerManager: p2p.NewMockMessageHandlerManager(),
 		MessageSender:         p2p.NewMockMessageSender(),
-		MetaKVClient:          mockkv.NewMetaMock(),
+		FrameMetaClient:       cli,
 		UserRawKVClient:       mockkv.NewMetaMock(),
 		ResourceBroker:        resourceBroker,
 	}
-	err := dp.Provide(func() workerParamListForTest {
+	err = dp.Provide(func() workerParamListForTest {
 		return params
 	})
 	if err != nil {
@@ -57,6 +64,7 @@ func MockBaseWorker(
 	}
 }
 
+// MockBaseWorkerCheckSendMessage checks can receive one message from mock message sender
 func MockBaseWorkerCheckSendMessage(
 	t *testing.T,
 	worker *DefaultBaseWorker,
@@ -69,6 +77,8 @@ func MockBaseWorkerCheckSendMessage(
 	require.Equal(t, message, got)
 }
 
+// MockBaseWorkerWaitUpdateStatus checks can receive a update status message from
+// mock message sender
 func MockBaseWorkerWaitUpdateStatus(
 	t *testing.T,
 	worker *DefaultBaseWorker,

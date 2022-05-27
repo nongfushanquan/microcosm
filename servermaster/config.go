@@ -27,6 +27,7 @@ import (
 	"github.com/hanfei1991/microcosm/pkg/errors"
 	"github.com/hanfei1991/microcosm/pkg/etcdutils"
 	"github.com/hanfei1991/microcosm/pkg/meta/metaclient"
+	pkgOrm "github.com/hanfei1991/microcosm/pkg/orm"
 	"github.com/pingcap/tiflow/dm/pkg/log"
 	"go.etcd.io/etcd/server/v3/embed"
 	"go.uber.org/zap"
@@ -41,9 +42,6 @@ const (
 	defaultCampaignTimeout    = 5 * time.Second
 	defaultDiscoverTicker     = 3 * time.Second
 	defaultMetricInterval     = 15 * time.Second
-	// TODO: make it configurable, and must be larger than the
-	// workerTimeoutDuration (15s by default) in executor
-	defaultWorkerTimeout = 16 * time.Second
 
 	defaultPeerUrls            = "http://127.0.0.1:8291"
 	defaultInitialClusterState = embed.ClusterStateFlagNew
@@ -81,8 +79,10 @@ func NewConfig() *Config {
 	fs.StringVar(&cfg.Etcd.Name, "name", "", "human-readable name for this DF-master member")
 	fs.StringVar(&cfg.Etcd.DataDir, "data-dir", "", "data directory for etcd using")
 
-	fs.StringVar(&cfg.FrameMetaConf.Endpoints[0], "frame-meta-endpoints", metaclient.DefaultFrameMetaEndpoints, `framework metastore endpoints`)
-	fs.StringVar(&cfg.UserMetaConf.Endpoints[0], "user-meta-endpoints", metaclient.DefaultUserMetaEndpoints, `user metastore endpoints`)
+	fs.StringVar(&cfg.FrameMetaConf.Endpoints[0], "frame-meta-endpoints", pkgOrm.DefaultFrameMetaEndpoints, `framework metastore endpoint`)
+	fs.StringVar(&cfg.FrameMetaConf.Auth.User, "frame-meta-user", pkgOrm.DefaultFrameMetaUser, `framework metastore user`)
+	fs.StringVar(&cfg.FrameMetaConf.Auth.Passwd, "frame-meta-password", pkgOrm.DefaultFrameMetaPassword, `framework metastore password`)
+	fs.StringVar(&cfg.UserMetaConf.Endpoints[0], "user-meta-endpoints", metaclient.DefaultUserMetaEndpoints, `user metastore endpoint`)
 
 	fs.StringVar(&cfg.Etcd.InitialCluster, "initial-cluster", "", fmt.Sprintf("initial cluster configuration for bootstrapping, e.g. dm-master=%s", defaultPeerUrls))
 	fs.StringVar(&cfg.Etcd.PeerUrls, "peer-urls", defaultPeerUrls, "URLs for peer traffic")

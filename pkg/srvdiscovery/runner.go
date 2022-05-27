@@ -11,6 +11,10 @@ import (
 
 // DiscoveryRunner defines an interface to run Discovery service
 type DiscoveryRunner interface {
+	// ResetDiscovery creates a new discovery service, close the old discovery
+	// watcher and creates a new watcher.
+	// if resetSession is true, the session of discovery runner will be recreated
+	// and returned.
 	ResetDiscovery(ctx context.Context, resetSession bool) (Session, error)
 	GetWatcher() <-chan WatchResp
 	// returns current snapshot, DiscoveryRunner maintains this as snapshot plus
@@ -18,11 +22,14 @@ type DiscoveryRunner interface {
 	// consume more memory, but since it contains node address information only,
 	// the memory consumption is acceptable.
 	GetSnapshot() Snapshot
+	// ApplyWatchResult applies changed ServiceResource to the snapshot of runner
 	ApplyWatchResult(WatchResp)
 }
 
+// Snapshot alias to a map mapping from uuid to service resource (node info)
 type Snapshot map[UUID]ServiceResource
 
+// Clone returns a deep copy of Snapshot
 func (s Snapshot) Clone() Snapshot {
 	snapshot := make(map[UUID]ServiceResource, len(s))
 	for k, v := range s {
@@ -110,6 +117,7 @@ func (dr *DiscoveryRunnerImpl) createSession(ctx context.Context, etcdCli *clien
 	return session, nil
 }
 
+// ResetDiscovery implements DiscoveryRunner.ResetDiscovery
 func (dr *DiscoveryRunnerImpl) ResetDiscovery(ctx context.Context, resetSession bool) (Session, error) {
 	session, err := dr.connectToEtcdDiscovery(ctx, resetSession)
 	if err != nil {
@@ -120,14 +128,17 @@ func (dr *DiscoveryRunnerImpl) ResetDiscovery(ctx context.Context, resetSession 
 	return session, nil
 }
 
+// GetSnapshot implements DiscoveryRunner.GetSnapshot
 func (dr *DiscoveryRunnerImpl) GetSnapshot() Snapshot {
 	return dr.snapshot
 }
 
+// GetWatcher implements DiscoveryRunner.GetWatcher
 func (dr *DiscoveryRunnerImpl) GetWatcher() <-chan WatchResp {
 	return dr.discoveryWatcher
 }
 
+// ApplyWatchResult implements DiscoveryRunner.ApplyWatchResult
 func (dr *DiscoveryRunnerImpl) ApplyWatchResult(resp WatchResp) {
 	for uuid, add := range resp.AddSet {
 		dr.snapshot[uuid] = add

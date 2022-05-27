@@ -10,13 +10,15 @@ import (
 	"github.com/BurntSushi/toml"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/tiflow/dm/pkg/log"
-	"github.com/pingcap/tiflow/pkg/workerpool"
 	"go.uber.org/atomic"
 	"go.uber.org/dig"
 	"go.uber.org/zap"
 
 	"github.com/hanfei1991/microcosm/client"
 	runtime "github.com/hanfei1991/microcosm/executor/worker"
+	"github.com/hanfei1991/microcosm/lib/config"
+	"github.com/hanfei1991/microcosm/lib/master"
+	"github.com/hanfei1991/microcosm/lib/metadata"
 	libModel "github.com/hanfei1991/microcosm/lib/model"
 	"github.com/hanfei1991/microcosm/lib/statusutil"
 	"github.com/hanfei1991/microcosm/model"
@@ -24,24 +26,30 @@ import (
 	"github.com/hanfei1991/microcosm/pkg/clock"
 	dcontext "github.com/hanfei1991/microcosm/pkg/context"
 	"github.com/hanfei1991/microcosm/pkg/deps"
+	"github.com/hanfei1991/microcosm/pkg/errctx"
 	derror "github.com/hanfei1991/microcosm/pkg/errors"
-	extKV "github.com/hanfei1991/microcosm/pkg/meta/extension"
+	resourcemeta "github.com/hanfei1991/microcosm/pkg/externalresource/resourcemeta/model"
+	extkv "github.com/hanfei1991/microcosm/pkg/meta/extension"
 	"github.com/hanfei1991/microcosm/pkg/meta/kvclient"
 	"github.com/hanfei1991/microcosm/pkg/meta/metaclient"
+	pkgOrm "github.com/hanfei1991/microcosm/pkg/orm"
 	"github.com/hanfei1991/microcosm/pkg/p2p"
 	"github.com/hanfei1991/microcosm/pkg/quota"
 	"github.com/hanfei1991/microcosm/pkg/tenant"
 	"github.com/hanfei1991/microcosm/pkg/uuid"
 )
 
+// Master defines a basic interface that can run in dataflow engine runtime
 type Master interface {
 	Init(ctx context.Context) error
 	Poll(ctx context.Context) error
-	MasterID() MasterID
+	MasterID() libModel.MasterID
 
 	runtime.Closer
 }
 
+// MasterImpl defines the interface to implement a master, business logic can be
+// added in the functions of this interface
 type MasterImpl interface {
 	// InitImpl provides customized logic for the business logic to initialize.
 	InitImpl(ctx context.Context) error
@@ -65,6 +73,7 @@ type MasterImpl interface {
 	// OnWorkerMessage is called when a customized message is received.
 	OnWorkerMessage(worker WorkerHandle, topic p2p.Topic, message interface{}) error
 
+	// OnWorkerStatusUpdated is called when a worker's status is updated.
 	OnWorkerStatusUpdated(worker WorkerHandle, newStatus *libModel.WorkerStatus) error
 
 	// CloseImpl is called when the master is being closed
@@ -77,54 +86,62 @@ const (
 	maxCreateWorkerConcurrency   = 100
 )
 
+// BaseMaster defines the master interface, it embeds the Master interface and
+// contains more core logic of a master
 type BaseMaster interface {
+	Master
+
 	// MetaKVClient return user metastore kv client
 	MetaKVClient() metaclient.KVClient
-	Init(ctx context.Context) error
-	Poll(ctx context.Context) error
-	MasterMeta() *MasterMetaKVData
-	MasterID() MasterID
-	GetWorkers() map[WorkerID]WorkerHandle
+	MasterMeta() *libModel.MasterMetaKVData
+	GetWorkers() map[libModel.WorkerID]WorkerHandle
 	IsMasterReady() bool
-	Close(ctx context.Context) error
 	OnError(err error)
-	// CreateWorker registers worker handler and dispatches worker to executor
-	CreateWorker(workerType WorkerType, config WorkerConfig, cost model.RescUnit) (WorkerID, error)
+
+	// CreateWorker requires the framework to dispatch a new worker.
+	// If the worker needs to access certain file system resources,
+	// their ID's must be passed by `resources`.
+	CreateWorker(
+		workerType WorkerType,
+		config WorkerConfig,
+		cost model.RescUnit,
+		resources ...resourcemeta.ResourceID,
+	) (libModel.WorkerID, error)
 }
 
+// DefaultBaseMaster implements BaseMaster interface
 type DefaultBaseMaster struct {
 	Impl MasterImpl
 
 	// dependencies
 	messageHandlerManager p2p.MessageHandlerManager
 	messageSender         p2p.MessageSender
-	// framework metastore prefix kvclient
-	metaKVClient metaclient.KVClient
+	// framework metastore client
+	frameMetaClient pkgOrm.Client
 	// user metastore raw kvclient
-	userRawKVClient       extKV.KVClientEx
+	userRawKVClient       extkv.KVClientEx
 	executorClientManager client.ClientsManager
 	serverMasterClient    client.MasterClient
-	pool                  workerpool.AsyncPool
 
 	clock clock.Clock
 
 	// workerManager maintains the list of all workers and
 	// their statuses.
-	workerManager workerManager
+	workerManager *master.WorkerManager
 
 	currentEpoch atomic.Int64
 
-	wg    sync.WaitGroup
-	errCh chan error
+	wg        sync.WaitGroup
+	errCenter *errctx.ErrCenter
 
 	// closeCh is closed when the BaseMaster is exiting
 	closeCh chan struct{}
 
-	id            MasterID // id of this master itself
+	id            libModel.MasterID // id of this master itself
 	advertiseAddr string
 	nodeID        p2p.NodeID
-	timeoutConfig TimeoutConfig
-	masterMeta    *MasterMetaKVData
+	timeoutConfig config.TimeoutConfig
+	masterMeta    *libModel.MasterMetaKVData
 
 	// user metastore prefix kvclient
 	// Don't close it. It's just a prefix wrapper for underlying userRawKVClient
@@ -145,23 +162,24 @@ type masterParams struct {
 
 	MessageHandlerManager p2p.MessageHandlerManager
 	MessageSender         p2p.MessageSender
-	// framework metastore prefix kvclient
-	MetaKVClient metaclient.KVClient
+	// framework metastore client
+	FrameMetaClient pkgOrm.Client
 	// user metastore raw kvclient
-	UserRawKVClient       extKV.KVClientEx
+	UserRawKVClient       extkv.KVClientEx
 	ExecutorClientManager client.ClientsManager
 	ServerMasterClient    client.MasterClient
 }
 
+// NewBaseMaster creates a new DefaultBaseMaster instance
 func NewBaseMaster(
 	ctx *dcontext.Context,
 	impl MasterImpl,
-	id MasterID,
+	id libModel.MasterID,
 ) BaseMaster {
 	var (
 		nodeID        p2p.NodeID
 		advertiseAddr string
-		masterMeta    = &MasterMetaKVData{}
+		masterMeta    = &libModel.MasterMetaKVData{}
 		params        masterParams
 	)
 	if ctx != nil {
@@ -183,19 +201,19 @@ func NewBaseMaster(
 		Impl:                  impl,
 		messageHandlerManager: params.MessageHandlerManager,
 		messageSender:         params.MessageSender,
-		metaKVClient:          params.MetaKVClient,
+		frameMetaClient:       params.FrameMetaClient,
 		userRawKVClient:       params.UserRawKVClient,
 		executorClientManager: params.ExecutorClientManager,
 		serverMasterClient:    params.ServerMasterClient,
-		pool:                  workerpool.NewDefaultAsyncPool(4),
 		id:                    id,
 		clock:                 clock.New(),
 
-		timeoutConfig: defaultTimeoutConfig,
+		timeoutConfig: config.DefaultTimeoutConfig(),
 		masterMeta:    masterMeta,
 
-		errCh:   make(chan error, 1),
 		closeCh: make(chan struct{}),
+
+		errCenter: errctx.NewErrCenter(),
 
 		uuidGen: uuid.NewGenerator(),
 
@@ -209,11 +227,15 @@ func NewBaseMaster(
 	}
 }
 
+// MetaKVClient returns the user space metaclient
 func (m *DefaultBaseMaster) MetaKVClient() metaclient.KVClient {
 	return m.userMetaKVClient
 }
 
+// Init implements BaseMaster.Init
 func (m *DefaultBaseMaster) Init(ctx context.Context) error {
+	ctx = m.errCenter.WithCancelOnFirstError(ctx)
+
 	isInit, err := m.doInit(ctx)
 	if err != nil {
 		return errors.Trace(err)
@@ -229,7 +251,7 @@ func (m *DefaultBaseMaster) Init(ctx context.Context) error {
 		}
 	}
 
-	if err := m.markStatusCodeInMetadata(ctx, MasterStatusInit); err != nil {
+	if err := m.markStatusCodeInMetadata(ctx, libModel.MasterStatusInit); err != nil {
 		return errors.Trace(err)
 	}
 	return nil
@@ -242,46 +264,72 @@ func (m *DefaultBaseMaster) doInit(ctx context.Context) (isFirstStartUp bool, er
 	}
 	m.currentEpoch.Store(epoch)
 
-	if err := m.deps.Provide(func() workerpool.AsyncPool {
-		return m.pool
-	}); err != nil {
-		return false, errors.Trace(err)
-	}
-
-	// TODO refactor context use when we can replace stdContext with dcontext.
-	dctx := dcontext.NewContext(ctx, log.L()).WithDeps(m.deps)
-	m.workerManager = newWorkerManager(
-		dctx,
+	m.workerManager = master.NewWorkerManager(
 		m.id,
-		!isInit,
 		epoch,
-		&m.timeoutConfig)
+		m.frameMetaClient,
+		m.messageSender,
+		func(_ context.Context, handle master.WorkerHandle) error {
+			return m.Impl.OnWorkerOnline(handle)
+		},
+		func(_ context.Context, handle master.WorkerHandle, err error) error {
+			return m.Impl.OnWorkerOffline(handle, err)
+		},
+		func(_ context.Context, handle master.WorkerHandle) error {
+			return m.Impl.OnWorkerStatusUpdated(handle, handle.Status())
+		},
+		func(_ context.Context, handle master.WorkerHandle, err error) error {
+			return m.Impl.OnWorkerDispatched(handle, err)
+		}, isInit, m.timeoutConfig, m.clock)
 
 	if err := m.registerMessageHandlers(ctx); err != nil {
 		return false, errors.Trace(err)
 	}
 
-	m.startBackgroundTasks()
+	if !isInit {
+		if err := m.workerManager.InitAfterRecover(ctx); err != nil {
+			return false, err
+		}
+	}
 	return isInit, nil
 }
 
 func (m *DefaultBaseMaster) registerMessageHandlers(ctx context.Context) error {
 	ok, err := m.messageHandlerManager.RegisterHandler(
 		ctx,
-		HeartbeatPingTopic(m.id),
-		&HeartbeatPingMessage{},
+		libModel.HeartbeatPingTopic(m.id),
+		&libModel.HeartbeatPingMessage{},
 		func(sender p2p.NodeID, value p2p.MessageValue) error {
-			msg := value.(*HeartbeatPingMessage)
-			if err := m.workerManager.HandleHeartbeat(msg, sender); err != nil {
-				return errors.Trace(err)
+			msg := value.(*libModel.HeartbeatPingMessage)
+			log.L().Info("Heartbeat Ping received",
+				zap.Any("msg", msg),
+				zap.String("master-id", m.id))
+			ok, err := m.messageSender.SendToNode(
+				ctx,
+				sender,
+				libModel.HeartbeatPongTopic(m.id, msg.FromWorkerID),
+				&libModel.HeartbeatPongMessage{
+					SendTime:   msg.SendTime,
+					ReplyTime:  m.clock.Now(),
+					ToWorkerID: msg.FromWorkerID,
+					Epoch:      m.currentEpoch.Load(),
+					IsFinished: msg.IsFinished,
+				})
+			if err != nil {
+				return err
 			}
+			if !ok {
+				// TODO add a retry mechanism
+				return nil
+			}
+			m.workerManager.HandleHeartbeat(msg, sender)
 			return nil
 		})
 	if err != nil {
 		return err
 	}
 	if !ok {
-		log.L().Panic("duplicate handler", zap.String("topic", HeartbeatPingTopic(m.id)))
+		log.L().Panic("duplicate handler", zap.String("topic", libModel.HeartbeatPingTopic(m.id)))
 	}
 
 	ok, err = m.messageHandlerManager.RegisterHandler(
@@ -290,7 +338,7 @@ func (m *DefaultBaseMaster) registerMessageHandlers(ctx context.Context) error {
 		&statusutil.WorkerStatusMessage{},
 		func(sender p2p.NodeID, value p2p.MessageValue) error {
 			msg := value.(*statusutil.WorkerStatusMessage)
-			m.workerManager.OnWorkerStatusUpdated(msg)
+			m.workerManager.OnWorkerStatusUpdateMessage(msg)
 			return nil
 		})
 	if err != nil {
@@ -303,7 +351,10 @@ func (m *DefaultBaseMaster) registerMessageHandlers(ctx context.Context) error {
 	return nil
 }
 
+// Poll implements BaseMaster.Poll
 func (m *DefaultBaseMaster) Poll(ctx context.Context) error {
+	ctx = m.errCenter.WithCancelOnFirstError(ctx)
+
 	if err := m.doPoll(ctx); err != nil {
 		return errors.Trace(err)
 	}
@@ -316,11 +367,11 @@ func (m *DefaultBaseMaster) Poll(ctx context.Context) error {
 }
 
 func (m *DefaultBaseMaster) doPoll(ctx context.Context) error {
+	if err := m.errCenter.CheckError(); err != nil {
+		return err
+	}
+
 	select {
-	case err := <-m.errCh:
-		if err != nil {
-			return errors.Trace(err)
-		}
 	case <-m.closeCh:
 		return derror.ErrMasterClosed.GenWithStackByArgs()
 	default:
@@ -329,24 +380,21 @@ func (m *DefaultBaseMaster) doPoll(ctx context.Context) error {
 	if err := m.messageHandlerManager.CheckError(ctx); err != nil {
 		return errors.Trace(err)
 	}
-
-	err := m.workerManager.CheckStatusUpdate(m.Impl.OnWorkerStatusUpdated)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return m.workerManager.Tick(ctx)
 }
 
-func (m *DefaultBaseMaster) MasterMeta() *MasterMetaKVData {
+// MasterMeta implements BaseMaster.MasterMeta
+func (m *DefaultBaseMaster) MasterMeta() *libModel.MasterMetaKVData {
 	return m.masterMeta
 }
 
-func (m *DefaultBaseMaster) MasterID() MasterID {
+// MasterID implements BaseMaster.MasterID
+func (m *DefaultBaseMaster) MasterID() libModel.MasterID {
 	return m.id
 }
 
-func (m *DefaultBaseMaster) GetWorkers() map[WorkerID]WorkerHandle {
+// GetWorkers implements BaseMaster.GetWorkers
+func (m *DefaultBaseMaster) GetWorkers() map[libModel.WorkerID]WorkerHandle {
 	return m.workerManager.GetWorkers()
 }
 
@@ -362,6 +410,7 @@ func (m *DefaultBaseMaster) doClose() {
 	}
 }
 
+// Close implements BaseMaster.Close
 func (m *DefaultBaseMaster) Close(ctx context.Context) error {
 	if err := m.Impl.CloseImpl(ctx); err != nil {
 		return errors.Trace(err)
@@ -371,106 +420,23 @@ func (m *DefaultBaseMaster) Close(ctx context.Context) error {
 	return nil
 }
 
-func (m *DefaultBaseMaster) startBackgroundTasks() {
-	cctx, cancel := context.WithCancel(context.Background())
-	m.wg.Add(1)
-	go func() {
-		defer m.wg.Done()
-		<-m.closeCh
-		cancel()
-	}()
-
-	m.wg.Add(1)
-	go func() {
-		defer m.wg.Done()
-		if err := m.pool.Run(cctx); err != nil {
-			m.OnError(err)
-		}
-	}()
-
-	m.wg.Add(1)
-	go func() {
-		defer m.wg.Done()
-		if err := m.runWorkerCheck(cctx); err != nil {
-			m.OnError(err)
-		}
-	}()
-}
-
-func (m *DefaultBaseMaster) runWorkerCheck(ctx context.Context) error {
-	ticker := time.NewTicker(m.timeoutConfig.masterHeartbeatCheckLoopInterval)
-	for {
-		select {
-		case <-ctx.Done():
-			return errors.Trace(ctx.Err())
-		case <-ticker.C:
-		}
-
-		offlinedWorkers, onlinedWorkers := m.workerManager.Tick(ctx)
-		// It is logical to call `OnWorkerOnline` first and then call `OnWorkerOffline`.
-		// In case that these two events for the same worker is detected in the same tick.
-		for _, workerInfo := range onlinedWorkers {
-			log.L().Info("worker is online", zap.Any("master-id", m.id), zap.Any("worker-info", workerInfo))
-
-			handle := m.workerManager.GetWorkerHandle(workerInfo.ID)
-			err := m.Impl.OnWorkerOnline(handle)
-			if err != nil {
-				return errors.Trace(err)
-			}
-		}
-
-		for _, workerInfo := range offlinedWorkers {
-			status, ok := m.workerManager.GetStatus(workerInfo.ID)
-			if !ok {
-				log.L().Panic(
-					"offlined worker has no status found",
-					zap.Any("worker-info", workerInfo),
-				)
-			}
-			log.L().Info("worker is offline", zap.Any("master-id", m.id), zap.Any("worker-info", workerInfo), zap.Any("worker-status", status))
-			tombstoneHandle := NewTombstoneWorkerHandle(workerInfo.ID, *status, nil)
-			var offlineError error
-			switch status.Code {
-			case libModel.WorkerStatusFinished:
-				offlineError = derror.ErrWorkerFinish.FastGenByArgs()
-			case libModel.WorkerStatusStopped:
-				offlineError = derror.ErrWorkerStop.FastGenByArgs()
-			default:
-				offlineError = derror.ErrWorkerOffline.FastGenByArgs(workerInfo.ID)
-			}
-
-			err := m.Impl.OnWorkerOffline(tombstoneHandle, offlineError)
-			if err != nil {
-				return errors.Trace(err)
-			}
-		}
-	}
-}
-
+// OnError implements BaseMaster.OnError
 func (m *DefaultBaseMaster) OnError(err error) {
-	if errors.Cause(err) == context.Canceled {
-		// TODO think about how to gracefully handle cancellation here.
-		log.L().Warn("BaseMaster is being canceled", zap.String("id", m.id), zap.Error(err))
-		return
-	}
-	select {
-	case m.errCh <- err:
-	default:
-	}
+	m.errCenter.OnError(err)
 }
 
 // refreshMetadata load and update metadata by current epoch, nodeID, advertiseAddr, etc.
 // master meta is persisted before it is created, in this function we update some
 // fileds to the current value, including epoch, nodeID and advertiseAddr.
-func (m *DefaultBaseMaster) refreshMetadata(ctx context.Context) (isInit bool, epoch Epoch, err error) {
-	metaClient := NewMasterMetadataClient(m.id, m.metaKVClient)
+func (m *DefaultBaseMaster) refreshMetadata(ctx context.Context) (isInit bool, epoch libModel.Epoch, err error) {
+	metaClient := metadata.NewMasterMetadataClient(m.id, m.frameMetaClient)
 
 	masterMeta, err := metaClient.Load(ctx)
 	if err != nil {
 		return false, 0, err
 	}
 
-	epoch, err = m.metaKVClient.GenEpoch(ctx)
+	epoch, err = m.frameMetaClient.GenEpoch(ctx)
 	if err != nil {
 		return false, 0, err
 	}
@@ -480,28 +446,28 @@ func (m *DefaultBaseMaster) refreshMetadata(ctx context.Context) (isInit bool, e
 	masterMeta.Addr = m.advertiseAddr
 	masterMeta.NodeID = m.nodeID
 
-	if err := metaClient.Store(ctx, masterMeta); err != nil {
+	if err := metaClient.Update(ctx, masterMeta); err != nil {
 		return false, 0, errors.Trace(err)
 	}
 
 	m.masterMeta = masterMeta
 	// isInit true means the master is created but has not been initialized.
-	isInit = masterMeta.StatusCode == MasterStatusUninit
+	isInit = masterMeta.StatusCode == libModel.MasterStatusUninit
 
 	return
 }
 
 func (m *DefaultBaseMaster) markStatusCodeInMetadata(
-	ctx context.Context, code MasterStatusCode,
+	ctx context.Context, code libModel.MasterStatusCode,
 ) error {
-	metaClient := NewMasterMetadataClient(m.id, m.metaKVClient)
+	metaClient := metadata.NewMasterMetadataClient(m.id, m.frameMetaClient)
 	masterMeta, err := metaClient.Load(ctx)
 	if err != nil {
 		return errors.Trace(err)
 	}
 
 	masterMeta.StatusCode = code
-	return metaClient.Store(ctx, masterMeta)
+	return metaClient.Update(ctx, masterMeta)
 }
 
 // prepareWorkerConfig extracts information from WorkerConfig into detail fields.
@@ -510,11 +476,11 @@ func (m *DefaultBaseMaster) markStatusCodeInMetadata(
 // - If workerType is worker type, the config is a user defined config struct, we
 //   marshal it to byte slice as returned config, and generate a random WorkerID.
 func (m *DefaultBaseMaster) prepareWorkerConfig(
-	workerType WorkerType, config WorkerConfig,
-) (rawConfig []byte, workerID WorkerID, err error) {
+	workerType libModel.WorkerType, config WorkerConfig,
+) (rawConfig []byte, workerID libModel.WorkerID, err error) {
 	switch workerType {
 	case CvsJobMaster, FakeJobMaster, DMJobMaster:
-		masterMeta, ok := config.(*MasterMetaKVData)
+		masterMeta, ok := config.(*libModel.MasterMetaKVData)
 		if !ok {
 			err = derror.ErrMasterInvalidMeta.GenWithStackByArgs(config)
 			return
@@ -539,16 +505,25 @@ func (m *DefaultBaseMaster) prepareWorkerConfig(
 	return
 }
 
-func (m *DefaultBaseMaster) CreateWorker(workerType WorkerType, config WorkerConfig, cost model.RescUnit) (WorkerID, error) {
+// CreateWorker implements BaseMaster.CreateWorker
+func (m *DefaultBaseMaster) CreateWorker(
+	workerType libModel.WorkerType,
+	config WorkerConfig,
+	cost model.RescUnit,
+	resources ...resourcemeta.ResourceID,
+) (libModel.WorkerID, error) {
 	log.L().Info("CreateWorker",
 		zap.Int64("worker-type", int64(workerType)),
 		zap.Any("worker-config", config),
+		zap.Int("cost", int(cost)),
+		zap.Any("resources", resources),
 		zap.String("master-id", m.id))
 
-	quotaCtx, cancel := context.WithTimeout(context.Background(), createWorkerWaitQuotaTimeout)
+	ctx := m.errCenter.WithCancelOnFirstError(context.Background())
+	quotaCtx, cancel := context.WithTimeout(ctx, createWorkerWaitQuotaTimeout)
 	defer cancel()
 	if err := m.createWorkerQuota.Consume(quotaCtx); err != nil {
-		return "", derror.ErrMasterConcurrencyExceeded.Wrap(err)
+		return "", derror.Wrap(derror.ErrMasterConcurrencyExceeded, err)
 	}
 
 	configBytes, workerID, err := m.prepareWorkerConfig(workerType, config)
@@ -557,92 +532,65 @@ func (m *DefaultBaseMaster) CreateWorker(workerType WorkerType, config WorkerCon
 	}
 
 	go func() {
-		// TODO make the timeout configurable
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
 		defer func() {
 			m.createWorkerQuota.Release()
 		}()
 
-		// When CreateWorker failed, we need to pass the worker id to
-		// OnWorkerDispatched, so we use a dummy WorkerHandle.
-		dispatchFailedDummyHandler := NewTombstoneWorkerHandle(
-			workerID, libModel.WorkerStatus{Code: libModel.WorkerStatusError}, nil)
-		requestCtx, cancel := context.WithTimeout(context.Background(), createWorkerTimeout)
+		requestCtx, cancel := context.WithTimeout(ctx, createWorkerTimeout)
 		defer cancel()
-		// This following API should be refined.
-		resp, err := m.serverMasterClient.ScheduleTask(requestCtx, &pb.TaskSchedulerRequest{Tasks: []*pb.ScheduleTask{{
-			Task: &pb.TaskRequest{
-				Id: 0,
-			},
-			Cost: int64(cost),
-		}}},
-			// TODO (zixiong) make the timeout configurable
+
+		resp, err := m.serverMasterClient.ScheduleTask(requestCtx, &pb.ScheduleTaskRequest{
+			TaskId:               workerID,
+			Cost:                 int64(cost),
+			ResourceRequirements: resources,
+		},
+			// TODO (zixiong) remove this timeout.
 			time.Second*10)
 		if err != nil {
-			err1 := m.Impl.OnWorkerDispatched(dispatchFailedDummyHandler, errors.Trace(err))
-			if err1 != nil {
-				m.OnError(errors.Trace(err1))
-			}
+			// TODO log the gRPC errors from a lower level such as by an interceptor.
+			log.L().Warn("ScheduleTask returned error", zap.Error(err))
+			m.workerManager.AbortCreatingWorker(workerID, err)
 			return
 		}
-		schedule := resp.GetSchedule()
-		if len(schedule) != 1 {
-			log.L().Panic("unexpected schedule result", zap.Any("schedule", schedule))
-		}
-		executorID := model.ExecutorID(schedule[0].ExecutorId)
+		log.L().Debug("ScheduleTask succeeded", zap.Any("response", resp))
 
-		err = m.executorClientManager.AddExecutor(executorID, schedule[0].Addr)
+		executorID := model.ExecutorID(resp.ExecutorId)
+
+		err = m.executorClientManager.AddExecutor(executorID, resp.ExecutorAddr)
 		if err != nil {
-			err1 := m.Impl.OnWorkerDispatched(dispatchFailedDummyHandler, errors.Trace(err))
-			if err1 != nil {
-				m.OnError(errors.Trace(err1))
-			}
+			m.workerManager.AbortCreatingWorker(workerID, err)
 			return
 		}
+
 		executorClient := m.executorClientManager.ExecutorClient(executorID)
-		executorResp, err := executorClient.Send(requestCtx, &client.ExecutorRequest{
-			Cmd: client.CmdDispatchTask,
-			Req: &pb.DispatchTaskRequest{
-				TaskTypeId: int64(workerType),
-				TaskConfig: configBytes,
-				MasterId:   m.id,
-				WorkerId:   workerID,
-			},
+		dispatchArgs := &client.DispatchTaskArgs{
+			WorkerID:     workerID,
+			MasterID:     m.id,
+			WorkerType:   int64(workerType),
+			WorkerConfig: configBytes,
+		}
+
+		err = executorClient.DispatchTask(requestCtx, dispatchArgs, func() {
+			m.workerManager.BeforeStartingWorker(workerID, executorID)
+		}, func(err error) {
+			m.workerManager.AbortCreatingWorker(workerID, err)
 		})
+
 		if err != nil {
-			err1 := m.Impl.OnWorkerDispatched(dispatchFailedDummyHandler, errors.Trace(err))
-			if err1 != nil {
-				m.OnError(errors.Trace(err1))
-			}
-			return
-		}
-		dispatchTaskResp := executorResp.Resp.(*pb.DispatchTaskResponse)
-		log.L().Info("Worker dispatched", zap.Any("master-id", m.id), zap.Any("response", dispatchTaskResp))
-		errCode := dispatchTaskResp.GetErrorCode()
-		if errCode != pb.DispatchTaskErrorCode_OK {
-			err1 := m.Impl.OnWorkerDispatched(dispatchFailedDummyHandler,
-				errors.Errorf("dispatch worker failed with error code: %d", errCode))
-			if err1 != nil {
-				m.OnError(errors.Trace(err1))
-			}
+			// All cleaning up should have been done in AbortCreatingWorker.
+			log.L().Info("DispatchTask failed",
+				zap.Error(err))
 			return
 		}
 
-		if err := m.workerManager.OnWorkerCreated(ctx, workerID, p2p.NodeID(executorID)); err != nil {
-			m.OnError(errors.Trace(err))
-		}
-		handle := m.workerManager.GetWorkerHandle(workerID)
-
-		if err := m.Impl.OnWorkerDispatched(handle, nil); err != nil {
-			m.OnError(errors.Trace(err))
-		}
+		log.L().Info("Dispatch Worker succeeded",
+			zap.Any("args", dispatchArgs))
 	}()
 
 	return workerID, nil
 }
 
+// IsMasterReady implements BaseMaster.IsMasterReady
 func (m *DefaultBaseMaster) IsMasterReady() bool {
 	return m.workerManager.IsInitialized()
 }

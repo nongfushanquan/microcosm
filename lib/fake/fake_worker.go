@@ -3,14 +3,18 @@ package fake
 import (
 	"context"
 	"encoding/json"
-	"errors"
+	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/pingcap/errors"
 	"github.com/pingcap/tiflow/dm/pkg/log"
+	"go.etcd.io/etcd/api/v3/mvccpb"
+	clientv3 "go.etcd.io/etcd/client/v3"
 	"go.uber.org/zap"
 	"golang.org/x/time/rate"
+	"google.golang.org/grpc"
 
 	"github.com/hanfei1991/microcosm/lib"
 	libModel "github.com/hanfei1991/microcosm/lib/model"
@@ -23,10 +27,20 @@ import (
 var _ lib.Worker = (*dummyWorker)(nil)
 
 type (
+	// Worker is exposed for unit test
 	Worker = dummyWorker
 
+	// WorkerConfig defines config of fake worker
 	WorkerConfig struct {
+		ID         int   `json:"id"`
 		TargetTick int64 `json:"target-tick"`
+
+		EtcdWatchEnable     bool          `json:"etcd-watch-enable"`
+		EtcdEndpoints       []string      `json:"etcd-endpoints"`
+		EtcdWatchPrefix     string        `json:"etcd-watch-prefix"`
+		InjectErrorInterval time.Duration `json:"inject-error-interval"`
+
+		Checkpoint workerCheckpoint `json:"checkpoint"`
 	}
 
 	dummyWorker struct {
@@ -36,6 +50,7 @@ type (
 		closed int32
 		status *dummyWorkerStatus
 		config *WorkerConfig
+		errCh  chan error
 
 		statusRateLimiter *rate.Limiter
 
@@ -43,18 +58,39 @@ type (
 			sync.RWMutex
 			code libModel.WorkerStatusCode
 		}
+
+		startTime time.Time
 	}
 )
 
 type dummyWorkerStatus struct {
-	Tick int64 `json:"tick"`
+	sync.RWMutex
+	BusinessID int               `json:"business-id"`
+	Tick       int64             `json:"tick"`
+	Checkpoint *workerCheckpoint `json:"checkpoint"`
 }
 
 func (s *dummyWorkerStatus) tick() {
+	s.Lock()
+	defer s.Unlock()
 	s.Tick++
 }
 
+func (s *dummyWorkerStatus) getEtcdCheckpoint() workerCheckpoint {
+	s.RLock()
+	defer s.RUnlock()
+	return *s.Checkpoint
+}
+
+func (s *dummyWorkerStatus) setEtcdCheckpoint(ckpt *workerCheckpoint) {
+	s.Lock()
+	defer s.Unlock()
+	s.Checkpoint = ckpt
+}
+
 func (s *dummyWorkerStatus) Marshal() ([]byte, error) {
+	s.RLock()
+	defer s.RUnlock()
 	return json.Marshal(s)
 }
 
@@ -64,8 +100,12 @@ func (s *dummyWorkerStatus) Unmarshal(data []byte) error {
 
 func (d *dummyWorker) InitImpl(ctx context.Context) error {
 	if !d.init {
+		if d.config.EtcdWatchEnable {
+			d.bgRunEtcdWatcher(ctx)
+		}
 		d.init = true
 		d.setStatusCode(libModel.WorkerStatusNormal)
+		d.startTime = time.Now()
 		return nil
 	}
 	return errors.New("repeated init")
@@ -74,6 +114,12 @@ func (d *dummyWorker) InitImpl(ctx context.Context) error {
 func (d *dummyWorker) Tick(ctx context.Context) error {
 	if !d.init {
 		return errors.New("not yet init")
+	}
+
+	select {
+	case err := <-d.errCh:
+		return err
+	default:
 	}
 
 	d.status.tick()
@@ -102,6 +148,11 @@ func (d *dummyWorker) Tick(ctx context.Context) error {
 		return d.Exit(ctx, d.Status(), nil)
 	}
 
+	if d.config.InjectErrorInterval != 0 {
+		if time.Since(d.startTime) > d.config.InjectErrorInterval {
+			return errors.Errorf("injected error by worker: %d", d.config.ID)
+		}
+	}
 	return nil
 }
 
@@ -130,7 +181,7 @@ func (d *dummyWorker) OnMasterFailover(_ lib.MasterFailoverReason) error {
 func (d *dummyWorker) OnMasterMessage(topic p2p.Topic, message p2p.MessageValue) error {
 	log.L().Info("fakeWorker: OnMasterMessage", zap.Any("message", message))
 	switch msg := message.(type) {
-	case *lib.StatusChangeRequest:
+	case *libModel.StatusChangeRequest:
 		switch msg.ExpectState {
 		case libModel.WorkerStatusStopped:
 			d.setStatusCode(libModel.WorkerStatusStopped)
@@ -161,14 +212,83 @@ func (d *dummyWorker) getStatusCode() libModel.WorkerStatusCode {
 	return d.statusCode.code
 }
 
+func (d *dummyWorker) bgRunEtcdWatcher(ctx context.Context) {
+	go func() {
+		if err := d.createEtcdWatcher(ctx); err != nil {
+			select {
+			case d.errCh <- err:
+			default:
+				log.L().Warn("duplicated error", zap.Error(err))
+			}
+		}
+	}()
+}
+
+func (d *dummyWorker) createEtcdWatcher(ctx context.Context) error {
+	cli, err := clientv3.New(clientv3.Config{
+		Endpoints:   d.config.EtcdEndpoints,
+		Context:     ctx,
+		DialTimeout: 3 * time.Second,
+		DialOptions: []grpc.DialOption{},
+	})
+	if err != nil {
+		return errors.Trace(err)
+	}
+	key := fmt.Sprintf("%s%d", d.config.EtcdWatchPrefix, d.config.ID)
+watchLoop:
+	for {
+		select {
+		case <-ctx.Done():
+			return errors.Trace(ctx.Err())
+		default:
+		}
+		opts := make([]clientv3.OpOption, 0)
+		if d.status.getEtcdCheckpoint().Revision > 0 {
+			opts = append(opts, clientv3.WithRev(d.status.getEtcdCheckpoint().Revision+1))
+		}
+		ch := cli.Watch(ctx, key, opts...)
+		for resp := range ch {
+			if resp.Err() != nil {
+				log.L().Warn("watch met error", zap.Error(resp.Err()))
+				continue watchLoop
+			}
+			for _, event := range resp.Events {
+				// no concurrent write of this checkpoint, so it is safe to read
+				// old value, change it and overwrite.
+				ckpt := d.status.getEtcdCheckpoint()
+				ckpt.MvccCount++
+				ckpt.Revision = event.Kv.ModRevision
+				switch event.Type {
+				case mvccpb.PUT:
+					ckpt.Value = string(event.Kv.Value)
+				case mvccpb.DELETE:
+					ckpt.Value = ""
+				}
+				d.status.setEtcdCheckpoint(&ckpt)
+			}
+		}
+	}
+}
+
+// NewDummyWorker creates a new dummy worker instance
 func NewDummyWorker(
 	ctx *dcontext.Context,
-	id lib.WorkerID, masterID lib.MasterID,
+	id libModel.WorkerID, masterID libModel.MasterID,
 	cfg lib.WorkerConfig,
 ) lib.WorkerImpl {
+	wcfg := cfg.(*WorkerConfig)
+	status := &dummyWorkerStatus{
+		BusinessID: wcfg.ID,
+		Tick:       wcfg.Checkpoint.Tick,
+		Checkpoint: &workerCheckpoint{
+			Revision:  wcfg.Checkpoint.Revision,
+			MvccCount: wcfg.Checkpoint.MvccCount,
+		},
+	}
 	return &dummyWorker{
-		statusRateLimiter: rate.NewLimiter(rate.Every(time.Second*3), 1),
-		status:            &dummyWorkerStatus{},
-		config:            cfg.(*WorkerConfig),
+		statusRateLimiter: rate.NewLimiter(rate.Every(100*time.Millisecond), 1),
+		status:            status,
+		config:            wcfg,
+		errCh:             make(chan error, 1),
 	}
 }

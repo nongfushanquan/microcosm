@@ -3,6 +3,7 @@ package cvstask
 import (
 	"context"
 	"encoding/json"
+	"math/rand"
 	"sync"
 	"time"
 
@@ -23,7 +24,7 @@ import (
 )
 
 const (
-	BUFFERSIZE = 1024
+	bufferSize = 1024
 )
 
 type strPair struct {
@@ -31,6 +32,7 @@ type strPair struct {
 	secondStr string
 }
 
+// Config is cvs task config
 type Config struct {
 	Idx      int    `json:"Idx"`
 	SrcHost  string `json:"SrcHost"`
@@ -39,11 +41,40 @@ type Config struct {
 	StartLoc string `json:"StartLoc"`
 }
 
+// Status represents business status of cvs task
 type Status struct {
 	TaskConfig Config `json:"Config"`
 	CurrentLoc string `json:"CurLoc"`
 	Count      int64  `json:"Cnt"`
 }
+
+type connPool struct {
+	sync.Mutex
+
+	pool map[string]connArray
+}
+
+var pool connPool = connPool{pool: make(map[string]connArray)}
+
+func (c *connPool) getConn(addr string) (*grpc.ClientConn, error) {
+	c.Lock()
+	defer c.Unlock()
+	arr, ok := c.pool[addr]
+	if !ok {
+		for i := 0; i < 5; i++ {
+			conn, err := grpc.Dial(addr, grpc.WithInsecure())
+			if err != nil {
+				return nil, err
+			}
+			arr = append(arr, conn)
+		}
+		c.pool[addr] = arr
+	}
+	i := rand.Intn(5)
+	return arr[i], nil
+}
+
+type connArray []*grpc.ClientConn
 
 type cvsTask struct {
 	lib.BaseWorker
@@ -66,26 +97,28 @@ type cvsTask struct {
 	statusRateLimiter *rate.Limiter
 }
 
+// RegisterWorker is used to register cvs task worker into global registry
 func RegisterWorker() {
-	constructor := func(ctx *dcontext.Context, id lib.WorkerID, masterID lib.MasterID, config lib.WorkerConfig) lib.WorkerImpl {
-		return NewCvsTask(ctx, id, masterID, config)
+	constructor := func(ctx *dcontext.Context, id libModel.WorkerID, masterID libModel.MasterID, config lib.WorkerConfig) lib.WorkerImpl {
+		return newCvsTask(ctx, id, masterID, config)
 	}
 	factory := registry.NewSimpleWorkerFactory(constructor, &Config{})
 	registry.GlobalWorkerRegistry().MustRegisterWorkerType(lib.CvsTask, factory)
 }
 
-func NewCvsTask(ctx *dcontext.Context, _workerID lib.WorkerID, masterID lib.MasterID, conf lib.WorkerConfig) *cvsTask {
+func newCvsTask(ctx *dcontext.Context, _workerID libModel.WorkerID, masterID libModel.MasterID, conf lib.WorkerConfig) *cvsTask {
 	cfg := conf.(*Config)
 	task := &cvsTask{
 		Config:            *cfg,
 		curLoc:            cfg.StartLoc,
-		buffer:            make(chan strPair, BUFFERSIZE),
+		buffer:            make(chan strPair, bufferSize),
 		statusRateLimiter: rate.NewLimiter(rate.Every(time.Second), 1),
 		counter:           atomic.NewInt64(0),
 	}
 	return task
 }
 
+// InitImpl implements WorkerImpl.InitImpl
 func (task *cvsTask) InitImpl(ctx context.Context) error {
 	log.L().Info("init the task  ", zap.Any("task id :", task.ID()))
 	task.setStatusCode(libModel.WorkerStatusNormal)
@@ -99,7 +132,7 @@ func (task *cvsTask) InitImpl(ctx context.Context) error {
 		}
 	}()
 	go func() {
-		err := task.Send(ctx)
+		err := task.send(ctx)
 		if err != nil {
 			log.L().Error("error happened when writing data to the downstream ", zap.String("id", task.ID()), zap.Any("message", err.Error()))
 			task.setRunError(err)
@@ -160,7 +193,7 @@ func (task *cvsTask) OnMasterFailover(reason lib.MasterFailoverReason) error {
 
 func (task *cvsTask) OnMasterMessage(topic p2p.Topic, message p2p.MessageValue) error {
 	switch msg := message.(type) {
-	case *lib.StatusChangeRequest:
+	case *libModel.StatusChangeRequest:
 		switch msg.ExpectState {
 		case libModel.WorkerStatusStopped:
 			task.setStatusCode(libModel.WorkerStatusStopped)
@@ -183,13 +216,12 @@ func (task *cvsTask) CloseImpl(ctx context.Context) error {
 }
 
 func (task *cvsTask) Receive(ctx context.Context) error {
-	conn, err := grpc.Dial(task.SrcHost, grpc.WithInsecure())
+	conn, err := pool.getConn(task.SrcHost)
 	if err != nil {
 		log.L().Error("cann't connect with the source address ", zap.String("id", task.ID()), zap.Any("message", task.SrcHost))
 		return err
 	}
 	client := pb.NewDataRWServiceClient(conn)
-	defer conn.Close()
 	reader, err := client.ReadLines(ctx, &pb.ReadLinesRequest{FileIdx: int32(task.Idx), LineNo: []byte(task.StartLoc)})
 	if err != nil {
 		log.L().Error("read data from file failed ", zap.String("id", task.ID()), zap.Error(err))
@@ -219,14 +251,13 @@ func (task *cvsTask) Receive(ctx context.Context) error {
 	return nil
 }
 
-func (task *cvsTask) Send(ctx context.Context) error {
-	conn, err := grpc.Dial(task.DstHost, grpc.WithInsecure())
+func (task *cvsTask) send(ctx context.Context) error {
+	conn, err := pool.getConn(task.DstHost)
 	if err != nil {
 		log.L().Error("can't connect with the destination address ", zap.Any("id", task.ID()), zap.Error(err))
 		return err
 	}
 	client := pb.NewDataRWServiceClient(conn)
-	defer conn.Close()
 	writer, err := client.WriteLines(ctx)
 	if err != nil {
 		log.L().Error("call write data rpc failed", zap.String("id", task.ID()), zap.Error(err))

@@ -2,17 +2,14 @@ package executor
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"time"
 
-	"github.com/hanfei1991/microcosm/pkg/deps"
-	extkv "github.com/hanfei1991/microcosm/pkg/meta/extension"
-	"github.com/hanfei1991/microcosm/pkg/meta/kvclient"
-	"github.com/hanfei1991/microcosm/pkg/meta/metaclient"
-	"github.com/hanfei1991/microcosm/pkg/tenant"
-
+	pcErrors "github.com/pingcap/errors"
 	"github.com/pingcap/tiflow/dm/pkg/log"
 	p2pImpl "github.com/pingcap/tiflow/pkg/p2p"
+	"github.com/pingcap/tiflow/pkg/retry"
 	"github.com/pingcap/tiflow/pkg/security"
 	"github.com/pingcap/tiflow/pkg/tcpserver"
 	"go.etcd.io/etcd/client/pkg/v3/logutil"
@@ -23,37 +20,46 @@ import (
 	"golang.org/x/time/rate"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/backoff"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/hanfei1991/microcosm/client"
-	"github.com/hanfei1991/microcosm/executor/runtime"
 	"github.com/hanfei1991/microcosm/executor/worker"
-	"github.com/hanfei1991/microcosm/lib"
+	libModel "github.com/hanfei1991/microcosm/lib/model"
 	"github.com/hanfei1991/microcosm/lib/registry"
 	"github.com/hanfei1991/microcosm/model"
 	"github.com/hanfei1991/microcosm/pb"
 	"github.com/hanfei1991/microcosm/pkg/config"
 	dcontext "github.com/hanfei1991/microcosm/pkg/context"
+	"github.com/hanfei1991/microcosm/pkg/deps"
 	"github.com/hanfei1991/microcosm/pkg/errors"
-	"github.com/hanfei1991/microcosm/pkg/externalresource"
 	"github.com/hanfei1991/microcosm/pkg/externalresource/broker"
+	"github.com/hanfei1991/microcosm/pkg/externalresource/storagecfg"
+	extkv "github.com/hanfei1991/microcosm/pkg/meta/extension"
+	"github.com/hanfei1991/microcosm/pkg/meta/kvclient"
+	"github.com/hanfei1991/microcosm/pkg/meta/metaclient"
+	pkgOrm "github.com/hanfei1991/microcosm/pkg/orm"
 	"github.com/hanfei1991/microcosm/pkg/p2p"
+	"github.com/hanfei1991/microcosm/pkg/rpcutil"
 	"github.com/hanfei1991/microcosm/pkg/serverutils"
 	"github.com/hanfei1991/microcosm/test"
 	"github.com/hanfei1991/microcosm/test/mock"
 )
 
+// Server is a executor server abstraction
 type Server struct {
 	cfg     *Config
 	testCtx *test.Context
 
-	tcpServer   tcpserver.TCPServer
-	grpcSrv     *grpc.Server
-	cli         client.MasterClient
-	cliUpdateCh chan cliUpdateInfo
-	sch         *runtime.Runtime
-	workerRtm   *worker.TaskRunner
-	msgServer   *p2p.MessageRPCService
-	info        *model.NodeInfo
+	tcpServer      tcpserver.TCPServer
+	grpcSrv        *grpc.Server
+	masterClient   client.MasterClient
+	resourceClient *rpcutil.FailoverRPCClients[pb.ResourceManagerClient]
+	cliUpdateCh    chan cliUpdateInfo
+	taskRunner     *worker.TaskRunner
+	taskCommitter  *worker.TaskCommitter
+	msgServer      *p2p.MessageRPCService
+	info           *model.NodeInfo
 
 	lastHearbeatTime time.Time
 
@@ -62,15 +68,16 @@ type Server struct {
 	// etcdCli connects to server master embed etcd, it should be used in service
 	// discovery only.
 	etcdCli *clientv3.Client
-	// framework metastore prefix kvclient
-	metaKVClient metaclient.KVClient
+	// framework metastore client
+	frameMetaClient pkgOrm.Client
 	// user metastore raw kvclient(reuse for all workers)
 	userRawKVClient extkv.KVClientEx
 	p2pMsgRouter    p2pImpl.MessageRouter
 	discoveryKeeper *serverutils.DiscoveryKeepaliver
-	resourceBroker  *externalresource.Broker
+	resourceBroker  broker.Broker
 }
 
+// NewServer creates a new executor server instance
 func NewServer(cfg *Config, ctx *test.Context) *Server {
 	s := Server{
 		cfg:         cfg,
@@ -80,69 +87,7 @@ func NewServer(cfg *Config, ctx *test.Context) *Server {
 	return &s
 }
 
-// SubmitBatchTasks implements the pb interface.
-func (s *Server) SubmitBatchTasks(ctx context.Context, req *pb.SubmitBatchTasksRequest) (*pb.SubmitBatchTasksResponse, error) {
-	tasks := make([]*model.Task, 0, len(req.Tasks))
-	for _, pbTask := range req.Tasks {
-		task := &model.Task{
-			ID:   model.ID(pbTask.Id),
-			Op:   pbTask.Op,
-			OpTp: model.OperatorType(pbTask.OpTp),
-		}
-		for _, id := range pbTask.Inputs {
-			task.Inputs = append(task.Inputs, model.ID(id))
-		}
-		for _, id := range pbTask.Outputs {
-			task.Outputs = append(task.Outputs, model.ID(id))
-		}
-		tasks = append(tasks, task)
-	}
-	log.L().Logger.Info("executor receive submit sub job", zap.Int("task", len(tasks)))
-	resp := &pb.SubmitBatchTasksResponse{}
-	err := s.sch.SubmitTasks(tasks)
-	if err != nil {
-		log.L().Logger.Error("submit subjob error", zap.Error(err))
-		resp.Err = errors.ToPBError(err)
-	}
-	return resp, nil
-}
-
-// CancelBatchTasks implements pb interface.
-func (s *Server) CancelBatchTasks(ctx context.Context, req *pb.CancelBatchTasksRequest) (*pb.CancelBatchTasksResponse, error) {
-	log.L().Info("cancel tasks", zap.String("req", req.String()))
-	err := s.sch.Stop(req.TaskIdList)
-	if err != nil {
-		return &pb.CancelBatchTasksResponse{
-			Err: &pb.Error{
-				Message: err.Error(),
-			},
-		}, nil
-	}
-	return &pb.CancelBatchTasksResponse{}, nil
-}
-
-// PauseBatchTasks implements pb interface.
-func (s *Server) PauseBatchTasks(ctx context.Context, req *pb.PauseBatchTasksRequest) (*pb.PauseBatchTasksResponse, error) {
-	log.L().Info("pause tasks", zap.String("req", req.String()))
-	err := s.sch.Pause(req.TaskIdList)
-	if err != nil {
-		return &pb.PauseBatchTasksResponse{
-			Err: &pb.Error{
-				Message: err.Error(),
-			},
-		}, nil
-	}
-	return &pb.PauseBatchTasksResponse{}, nil
-}
-
-// ResumeBatchTasks implements pb interface.
-func (s *Server) ResumeBatchTasks(ctx context.Context, req *pb.PauseBatchTasksRequest) (*pb.PauseBatchTasksResponse, error) {
-	log.L().Info("resume tasks", zap.String("req", req.String()))
-	s.sch.Continue(req.TaskIdList)
-	return &pb.PauseBatchTasksResponse{}, nil
-}
-
-func (s *Server) buildDeps(wid lib.WorkerID) (*deps.Deps, error) {
+func (s *Server) buildDeps() (*deps.Deps, error) {
 	deps := deps.NewDeps()
 	err := deps.Provide(func() p2p.MessageHandlerManager {
 		return s.msgServer.MakeHandlerManager()
@@ -158,8 +103,8 @@ func (s *Server) buildDeps(wid lib.WorkerID) (*deps.Deps, error) {
 		return nil, err
 	}
 
-	err = deps.Provide(func() metaclient.KVClient {
-		return s.metaKVClient
+	err = deps.Provide(func() pkgOrm.Client {
+		return s.frameMetaClient
 	})
 	if err != nil {
 		return nil, err
@@ -180,26 +125,14 @@ func (s *Server) buildDeps(wid lib.WorkerID) (*deps.Deps, error) {
 	}
 
 	err = deps.Provide(func() client.MasterClient {
-		return s.cli
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	proxy, err := s.resourceBroker.NewProxyForWorker(context.TODO(), wid)
-	if err != nil {
-		return nil, err
-	}
-	err = deps.Provide(func() externalresource.Proxy {
-		return proxy
+		return s.masterClient
 	})
 	if err != nil {
 		return nil, err
 	}
 
 	err = deps.Provide(func() broker.Broker {
-		// TODO: use correct broker.Broker
-		return nil
+		return s.resourceBroker
 	})
 	if err != nil {
 		return nil, err
@@ -208,21 +141,15 @@ func (s *Server) buildDeps(wid lib.WorkerID) (*deps.Deps, error) {
 	return deps, nil
 }
 
-func (s *Server) DispatchTask(ctx context.Context, req *pb.DispatchTaskRequest) (*pb.DispatchTaskResponse, error) {
-	log.L().Info("dispatch task", zap.String("req", req.String()))
-
-	// TODO better dependency management
-	dctx := dcontext.Background()
-	dctx.Dependencies = dcontext.RuntimeDependencies{
-		MessageHandlerManager: s.msgServer.MakeHandlerManager(),
-		MessageRouter:         p2p.NewMessageSender(s.p2pMsgRouter),
-		MetaKVClient:          s.metaKVClient,
-		UserRawKVClient:       s.userRawKVClient,
-		ExecutorClientManager: client.NewClientManager(),
-		ServerMasterClient:    s.cli,
-	}
-
-	dp, err := s.buildDeps(req.GetWorkerId())
+func (s *Server) makeTask(
+	ctx context.Context,
+	workerID libModel.WorkerID,
+	masterID libModel.MasterID,
+	workerType libModel.WorkerType,
+	workerConfig []byte,
+) (worker.Runnable, error) {
+	dctx := dcontext.NewContext(ctx, log.L())
+	dp, err := s.buildDeps()
 	if err != nil {
 		return nil, err
 	}
@@ -230,11 +157,12 @@ func (s *Server) DispatchTask(ctx context.Context, req *pb.DispatchTaskRequest) 
 	dctx.Environ.NodeID = p2p.NodeID(s.info.ID)
 	dctx.Environ.Addr = s.info.Addr
 
-	masterMeta := &lib.MasterMetaKVData{
-		// GetWorkerId here returns id of current unit
-		ID:     req.GetWorkerId(),
-		Tp:     lib.WorkerType(req.GetTaskTypeId()),
-		Config: req.GetTaskConfig(),
+	// NOTICE: only take effect when job type is job master
+	masterMeta := &libModel.MasterMetaKVData{
+		// TODO: ProjectID
+		ID:     workerID,
+		Tp:     workerType,
+		Config: workerConfig,
 	}
 	metaBytes, err := masterMeta.Marshal()
 	if err != nil {
@@ -244,35 +172,55 @@ func (s *Server) DispatchTask(ctx context.Context, req *pb.DispatchTaskRequest) 
 
 	newWorker, err := registry.GlobalWorkerRegistry().CreateWorker(
 		dctx,
-		lib.WorkerType(req.GetTaskTypeId()),
-		req.GetWorkerId(),
-		req.GetMasterId(),
-		req.GetTaskConfig())
+		workerType,
+		workerID,
+		masterID,
+		workerConfig)
 	if err != nil {
 		log.L().Error("Failed to create worker", zap.Error(err))
-		// TODO better error handling
 		return nil, err
 	}
-
-	if err := s.workerRtm.AddTask(newWorker); err != nil {
-		errCode := pb.DispatchTaskErrorCode_Other
-		if errors.ErrRuntimeReachedCapacity.Equal(err) || errors.ErrRuntimeIncomingQueueFull.Equal(err) {
-			errCode = pb.DispatchTaskErrorCode_NoResource
-		}
-
-		return &pb.DispatchTaskResponse{
-			ErrorCode:    errCode,
-			ErrorMessage: err.Error(),
-			WorkerId:     req.GetWorkerId(),
-		}, nil
-	}
-
-	return &pb.DispatchTaskResponse{
-		ErrorCode: pb.DispatchTaskErrorCode_OK,
-		WorkerId:  req.GetWorkerId(),
-	}, nil
+	return newWorker, nil
 }
 
+// PreDispatchTask implements Executor.PreDispatchTask
+func (s *Server) PreDispatchTask(ctx context.Context, req *pb.PreDispatchTaskRequest) (*pb.PreDispatchTaskResponse, error) {
+	task, err := s.makeTask(
+		ctx,
+		req.GetWorkerId(),
+		req.GetMasterId(),
+		libModel.WorkerType(req.GetTaskTypeId()),
+		req.GetTaskConfig())
+	if err != nil {
+		// We use the code Aborted here per the suggestion in gRPC's documentation
+		// "Use Aborted if the client should retry at a higher-level".
+		// Failure to make task is usually a problem that the business logic
+		// should be notified of.
+		return nil, status.Error(codes.Aborted, err.Error())
+	}
+
+	if !s.taskCommitter.PreDispatchTask(req.GetRequestId(), task) {
+		// The TaskCommitter failed to accept the task.
+		// Currently, the only reason is duplicate requestID.
+		return nil, status.Error(codes.AlreadyExists, "Duplicate request ID")
+	}
+
+	return &pb.PreDispatchTaskResponse{}, nil
+}
+
+// ConfirmDispatchTask implements Executor.ConfirmDispatchTask
+func (s *Server) ConfirmDispatchTask(ctx context.Context, req *pb.ConfirmDispatchTaskRequest) (*pb.ConfirmDispatchTaskResponse, error) {
+	ok, err := s.taskCommitter.ConfirmDispatchTask(req.GetRequestId(), req.GetWorkerId())
+	if err != nil {
+		return nil, status.Error(codes.Aborted, err.Error())
+	}
+	if !ok {
+		return nil, status.Error(codes.NotFound, "RequestID not found")
+	}
+	return &pb.ConfirmDispatchTaskResponse{}, nil
+}
+
+// Stop stops all running goroutines and releases resources in Server
 func (s *Server) Stop() {
 	if s.grpcSrv != nil {
 		s.grpcSrv.Stop()
@@ -296,8 +244,8 @@ func (s *Server) Stop() {
 		}
 	}
 
-	if s.metaKVClient != nil {
-		err := s.metaKVClient.Close()
+	if s.frameMetaClient != nil {
+		err := s.frameMetaClient.Close()
 		if err != nil {
 			log.L().Warn("failed to close connection to framework metastore", zap.Error(err))
 		}
@@ -320,11 +268,11 @@ func (s *Server) startForTest(ctx context.Context) (err error) {
 	if err != nil {
 		return err
 	}
-	s.sch = runtime.NewRuntime(s.testCtx)
-	go func() {
-		s.sch.Run(ctx, 10)
-	}()
 
+	err = s.initClients(ctx)
+	if err != nil {
+		return err
+	}
 	err = s.selfRegister(ctx)
 	if err != nil {
 		return err
@@ -352,10 +300,13 @@ const (
 	// TODO since we introduced queuing in the TaskRunner, it is no longer
 	// easy to implement the capacity. Think of a better solution later.
 	// defaultRuntimeCapacity      = 65536
-	defaultRuntimeIncomingQueueLen = 256
-	defaultRuntimeInitConcurrency  = 256
+	defaultRuntimeIncomingQueueLen   = 256
+	defaultRuntimeInitConcurrency    = 256
+	defaultTaskPreDispatchRequestTTL = 10 * time.Second
 )
 
+// Run drives server logic in independent background goroutines, and use error
+// group to collect errors.
 func (s *Server) Run(ctx context.Context) error {
 	if test.GetGlobalTestFlag() {
 		return s.startForTest(ctx)
@@ -364,26 +315,30 @@ func (s *Server) Run(ctx context.Context) error {
 	registerMetrics()
 
 	wg, ctx := errgroup.WithContext(ctx)
-
-	s.sch = runtime.NewRuntime(nil)
-	wg.Go(func() error {
-		s.sch.Run(ctx, 10)
-		return nil
-	})
-
-	s.workerRtm = worker.NewTaskRunner(defaultRuntimeIncomingQueueLen, defaultRuntimeInitConcurrency)
+	s.taskRunner = worker.NewTaskRunner(defaultRuntimeIncomingQueueLen, defaultRuntimeInitConcurrency)
+	s.taskCommitter = worker.NewTaskCommitter(s.taskRunner, defaultTaskPreDispatchRequestTTL)
+	defer func() {
+		s.taskCommitter.Close()
+	}()
 
 	wg.Go(func() error {
-		return s.workerRtm.Run(ctx)
+		return s.taskRunner.Run(ctx)
 	})
 
-	err := s.selfRegister(ctx)
+	err := s.initClients(ctx)
+	if err != nil {
+		return err
+	}
+	err = s.selfRegister(ctx)
 	if err != nil {
 		return err
 	}
 
 	// TODO: make the prefix configurable later
-	s.resourceBroker = externalresource.NewBroker(s.cfg.Name, s.cfg.Name, s.cli)
+	s.resourceBroker = broker.NewBroker(
+		&storagecfg.Config{Local: &storagecfg.LocalFileConfig{BaseDir: "./"}},
+		s.info.ID,
+		s.resourceClient)
 
 	s.p2pMsgRouter = p2p.NewMessageRouter(p2p.NodeID(s.info.ID), s.info.Addr)
 
@@ -458,7 +413,7 @@ func (s *Server) startTCPService(ctx context.Context, wg *errgroup.Group) error 
 // current the metastore is an embed etcd underlying
 func (s *Server) fetchMetaStore(ctx context.Context) error {
 	// query service discovery metastore to fetch metastore connection endpoint
-	resp, err := s.cli.QueryMetaStore(
+	resp, err := s.masterClient.QueryMetaStore(
 		ctx,
 		&pb.QueryMetaStoreRequest{Tp: pb.StoreType_ServiceDiscovery},
 		s.cfg.RPCTimeout,
@@ -496,67 +451,120 @@ func (s *Server) fetchMetaStore(ctx context.Context) error {
 	s.etcdCli = etcdCli
 
 	// fetch framework metastore connection endpoint
-	resp, err = s.cli.QueryMetaStore(
+	resp, err = s.masterClient.QueryMetaStore(
 		ctx,
 		&pb.QueryMetaStoreRequest{Tp: pb.StoreType_SystemMetaStore},
 		s.cfg.RPCTimeout,
 	)
 	if err != nil {
+		log.L().Error("query framework metastore fail")
 		return err
 	}
-	log.L().Info("update framework metastore", zap.String("addr", resp.Address))
-
-	conf := metaclient.StoreConfigParams{
-		Endpoints: []string{resp.Address},
-	}
-
-	cliEx, err := kvclient.NewKVClient(&conf)
+	var conf metaclient.StoreConfigParams
+	err = json.Unmarshal([]byte(resp.Address), &conf)
 	if err != nil {
-		log.L().Error("access framework metastore fail", zap.Any("store-conf", conf), zap.Error(err))
+		log.L().Error("unmarshal framework metastore config fail", zap.String("conf", resp.Address), zap.Error(err))
 		return err
 	}
-	// [TODO] use FrameTenantID here if support multi-tenant
-	s.metaKVClient = kvclient.NewPrefixKVClient(cliEx, tenant.DefaultUserTenantID)
+	// TODO: replace the default DB config
+	s.frameMetaClient, err = pkgOrm.NewClient(conf, pkgOrm.NewDefaultDBConfig())
+	if err != nil {
+		log.L().Error("connect to framework metastore fail", zap.Any("conf", conf), zap.Error(err))
+		return err
+	}
+	log.L().Info("update framework metastore successful", zap.String("addr", resp.Address))
 
 	// fetch user metastore connection endpoint
-	resp, err = s.cli.QueryMetaStore(
+	resp, err = s.masterClient.QueryMetaStore(
 		ctx,
 		&pb.QueryMetaStoreRequest{Tp: pb.StoreType_AppMetaStore},
 		s.cfg.RPCTimeout,
 	)
 	if err != nil {
+		log.L().Error("query user metastore fail")
 		return err
 	}
-	log.L().Info("update user metastore", zap.String("addr", resp.Address))
 
 	conf = metaclient.StoreConfigParams{
 		Endpoints: []string{resp.Address},
 	}
 	s.userRawKVClient, err = kvclient.NewKVClient(&conf)
 	if err != nil {
-		log.L().Error("access user metastore fail", zap.Any("store-conf", conf), zap.Error(err))
+		log.L().Error("connect to user metastore fail", zap.Any("store-conf", conf), zap.Error(err))
 		return err
 	}
+	log.L().Info("update user metastore successful", zap.String("addr", resp.Address))
 
 	return nil
 }
 
-func (s *Server) selfRegister(ctx context.Context) (err error) {
-	// Register myself
-	s.cli, err = client.NewMasterClient(ctx, getJoinURLs(s.cfg.Join))
+func (s *Server) initClients(ctx context.Context) (err error) {
+	s.masterClient, err = client.NewMasterClient(ctx, getJoinURLs(s.cfg.Join))
 	if err != nil {
 		return err
 	}
-	log.L().Logger.Info("master client init successful")
+	log.L().Info("master client init successful")
+
+	resourceCliDialer := func(ctx context.Context, addr string) (pb.ResourceManagerClient, rpcutil.CloseableConnIface, error) {
+		ctx, cancel := context.WithTimeout(ctx, client.DialTimeout)
+		defer cancel()
+		// TODO: reuse connection with masterClient
+		conn, err := grpc.DialContext(ctx, addr, grpc.WithInsecure(), grpc.WithBlock())
+		if err != nil {
+			return nil, nil, errors.Wrap(errors.ErrGrpcBuildConn, err)
+		}
+		return pb.NewResourceManagerClient(conn), conn, nil
+	}
+	s.resourceClient, err = rpcutil.NewFailoverRPCClients[pb.ResourceManagerClient](
+		ctx,
+		getJoinURLs(s.cfg.Join),
+		resourceCliDialer,
+	)
+	if err != nil {
+		if test.GetGlobalTestFlag() {
+			log.L().Info("ignore error when in unit tests")
+			return nil
+		}
+		return err
+	}
+	log.L().Info("resource client init successful")
+	return nil
+}
+
+func (s *Server) selfRegister(ctx context.Context) (err error) {
 	registerReq := &pb.RegisterExecutorRequest{
 		Address:    s.cfg.AdvertiseAddr,
 		Capability: defaultCapability,
 	}
 
-	resp, err := s.cli.RegisterExecutor(ctx, registerReq, s.cfg.RPCTimeout)
+	var resp *pb.RegisterExecutorResponse
+	err = retry.Do(ctx, func() error {
+		var err2 error
+		resp, err2 = s.masterClient.RegisterExecutor(ctx, registerReq, s.cfg.RPCTimeout)
+		if err2 != nil {
+			return err2
+		}
+		if resp.Err != nil {
+			return pcErrors.New(resp.Err.Code.String())
+		}
+		return nil
+	},
+		retry.WithBackoffBaseDelay(200 /* 200 ms */),
+		retry.WithBackoffMaxDelay(3000 /* 3 seconds */),
+		retry.WithMaxTries(15 /* fail after 33 seconds, TODO: make it configurable */),
+		retry.WithIsRetryableErr(func(err error) bool {
+			if err.Error() == pb.ErrorCode_MasterNotReady.String() {
+				log.L().Info("server master leader is not ready, retry later")
+				return true
+			}
+			return false
+		}),
+	)
+
 	if err != nil {
-		return err
+		return
 	}
+
 	s.info = &model.NodeInfo{
 		Type:       model.NodeTypeExecutor,
 		ID:         model.ExecutorID(resp.ExecutorId),
@@ -602,7 +610,7 @@ func (s *Server) keepHeartbeat(ctx context.Context) error {
 				// executor actually wait for a timeout when ttl is nearly up.
 				Ttl: uint64(s.cfg.KeepAliveTTL.Milliseconds() + s.cfg.RPCTimeout.Milliseconds()),
 			}
-			resp, err := s.cli.Heartbeat(ctx, req, s.cfg.RPCTimeout)
+			resp, err := s.masterClient.Heartbeat(ctx, req, s.cfg.RPCTimeout)
 			if err != nil {
 				log.L().Error("heartbeat rpc meet error", zap.Error(err))
 				if s.lastHearbeatTime.Add(s.cfg.KeepAliveTTL).Before(time.Now()) {
@@ -615,8 +623,14 @@ func (s *Server) keepHeartbeat(ctx context.Context) error {
 				switch resp.Err.Code {
 				case pb.ErrorCode_UnknownExecutor, pb.ErrorCode_TombstoneExecutor:
 					return errors.ErrHeartbeat.GenWithStack("logic error: %s", resp.Err.GetMessage())
+				case pb.ErrorCode_MasterNotReady:
+					s.lastHearbeatTime = t
+					if rl.Allow() {
+						log.L().Info("heartbeat success with MasterNotReady")
+					}
+					continue
+				default:
 				}
-				continue
 			}
 			// We aim to keep lastHbTime of executor consistent with lastHbTime of Master.
 			// If we set the heartbeat time of executor to the start time of rpc, it will
@@ -649,28 +663,29 @@ func getJoinURLs(addrs string) []string {
 }
 
 func (s *Server) reportTaskRescOnce(ctx context.Context) error {
-	resourceIDs := s.resourceBroker.AllocatedIDs()
-
-	rescs := s.sch.Resource()
-	req := &pb.ExecWorkloadRequest{
-		// TODO: use which field as ExecutorId is more accurate
-		ExecutorId: s.cfg.WorkerAddr,
-		Workloads:  make([]*pb.ExecWorkload, 0, len(rescs)),
-		ResourceId: resourceIDs,
-	}
-	for tp, resc := range rescs {
-		req.Workloads = append(req.Workloads, &pb.ExecWorkload{
-			Tp:    pb.JobType(tp),
-			Usage: int32(resc),
-		})
-	}
-	resp, err := s.cli.ReportExecutorWorkload(ctx, req)
-	if err != nil {
-		return err
-	}
-	if resp.Err != nil {
-		log.L().Warn("report executor workload error", zap.String("err", resp.Err.String()))
-	}
+	// TODO: do we need to report allocated resource to master?
+	// TODO: Implement task-wise workload reporting in TaskRunner.
+	/*
+		rescs := s.workerRtm.Workload()
+		req := &pb.ExecWorkloadRequest{
+			// TODO: use which field as ExecutorId is more accurate
+			ExecutorId: s.cfg.WorkerAddr,
+			Workloads:  make([]*pb.ExecWorkload, 0, len(rescs)),
+		}
+		for tp, resc := range rescs {
+			req.Workloads = append(req.Workloads, &pb.ExecWorkload{
+				Tp:    pb.JobType(tp),
+				Usage: int32(resc),
+			})
+		}
+		resp, err := s.masterClient.ReportExecutorWorkload(ctx, req)
+		if err != nil {
+			return err
+		}
+		if resp.Err != nil {
+			log.L().Warn("report executor workload error", zap.String("err", resp.Err.String()))
+		}
+	*/
 	return nil
 }
 
@@ -697,7 +712,8 @@ func (s *Server) bgUpdateServerMasterClients(ctx context.Context) error {
 		case <-ctx.Done():
 			return nil
 		case info := <-s.cliUpdateCh:
-			s.cli.UpdateClients(ctx, info.urls, info.leaderURL)
+			s.masterClient.UpdateClients(ctx, info.urls, info.leaderURL)
+			s.resourceClient.UpdateClients(ctx, info.urls, info.leaderURL)
 		}
 	}
 }
@@ -711,7 +727,7 @@ func (s *Server) collectMetricLoop(ctx context.Context, tickInterval time.Durati
 		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
-			metricRunningTask.Set(float64(s.workerRtm.TaskCount()))
+			metricRunningTask.Set(float64(s.taskRunner.TaskCount()))
 		}
 	}
 }

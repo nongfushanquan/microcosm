@@ -19,12 +19,18 @@ import (
 
 // Re-export types for public use
 type (
-	Runnable   = internal.Runnable
+	// Runnable alias internal.Runnable
+	Runnable = internal.Runnable
+	// RunnableID alias internal.RunnableID
 	RunnableID = internal.RunnableID
+	// Workloader alias internal.Workloader
 	Workloader = internal.Workloader
-	Closer     = internal.Closer
+	// Closer alias internal.Closer
+	Closer = internal.Closer
 )
 
+// TaskRunner receives RunnableContainer in a FIFO way, and runs them in
+// independent background goroutines.
 type TaskRunner struct {
 	inQueue       chan *internal.RunnableContainer
 	initQuotaSema *semaphore.Weighted
@@ -66,6 +72,7 @@ func (e *taskEntry) EventLoop(ctx context.Context) error {
 	}
 }
 
+// NewTaskRunner creates a new TaskRunner instance
 func NewTaskRunner(inQueueSize int, initConcurrency int) *TaskRunner {
 	return &TaskRunner{
 		inQueue:       make(chan *internal.RunnableContainer, inQueueSize),
@@ -74,6 +81,8 @@ func NewTaskRunner(inQueueSize int, initConcurrency int) *TaskRunner {
 	}
 }
 
+// AddTask enqueues a naked task, and AddTask will wrap the task with internal.WrapRunnable.
+// Deprecated. TODO Will be removed once two-phase task dispatching is enabled.
 func (r *TaskRunner) AddTask(task Runnable) error {
 	wrappedTask := internal.WrapRunnable(task, r.clock.Now())
 	select {
@@ -85,6 +94,20 @@ func (r *TaskRunner) AddTask(task Runnable) error {
 	return derror.ErrRuntimeIncomingQueueFull.GenWithStackByArgs()
 }
 
+// addWrappedTask enqueues a task already wrapped by internal.WrapRunnable.
+// NOTE: internal.RunnableContainer contains the submit-time for the task.
+func (r *TaskRunner) addWrappedTask(task *internal.RunnableContainer) error {
+	select {
+	case r.inQueue <- task:
+		return nil
+	default:
+	}
+
+	return derror.ErrRuntimeIncomingQueueFull.GenWithStackByArgs()
+}
+
+// Run runs forever until context is canceled or task queue is closed.
+// It receives new added task and call onNewTask with task
 func (r *TaskRunner) Run(ctx context.Context) error {
 	defer r.cancelAll()
 
@@ -105,6 +128,7 @@ func (r *TaskRunner) Run(ctx context.Context) error {
 	}
 }
 
+// Workload returns total workload of task runner
 func (r *TaskRunner) Workload() (ret model.RescUnit) {
 	r.tasks.Range(func(key, value interface{}) bool {
 		container := value.(*taskEntry).RunnableContainer
@@ -231,6 +255,7 @@ func (r *TaskRunner) onNewTask(ctx context.Context, task *internal.RunnableConta
 	return nil
 }
 
+// TaskCount returns current task count
 func (r *TaskRunner) TaskCount() int64 {
 	return r.taskCount.Load()
 }

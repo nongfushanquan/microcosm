@@ -2,12 +2,16 @@ package dm
 
 import (
 	"context"
+	"time"
 
+	"github.com/hanfei1991/microcosm/jobmaster/dm"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/tiflow/dm/dm/config"
 	"github.com/pingcap/tiflow/dm/loader"
 	"github.com/pingcap/tiflow/dm/pkg/log"
 	"go.uber.org/zap"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/hanfei1991/microcosm/lib"
 	"github.com/hanfei1991/microcosm/model"
@@ -32,10 +36,23 @@ func newLoadWorker(cfg lib.WorkerConfig) lib.WorkerImpl {
 
 func (l *loadWorker) InitImpl(ctx context.Context) error {
 	log.L().Info("init load worker")
+
+	rid := dm.NewDMResourceID(l.cfg.Name, l.cfg.SourceID)
+	h, err := l.OpenStorage(ctx, rid)
+	for status.Code(err) == codes.Unavailable {
+		log.L().Info("simple retry", zap.Error(err))
+		time.Sleep(time.Second)
+		h, err = l.OpenStorage(ctx, rid)
+	}
+	if err != nil {
+		return errors.Trace(err)
+	}
+	l.cfg.ExtStorage = h.BrExternalStorage()
+
 	// `workerName` and `etcdClient` of `NewLightning` are not used in dataflow
 	// scenario, we just use readable values here.
 	workerName := "dataflow-worker"
-	l.unitHolder = newUnitHolder(loader.NewLightning(l.cfg, nil, workerName))
+	l.unitHolder = newUnitHolder(lib.WorkerDMLoad, l.cfg.SourceID, loader.NewLightning(l.cfg, nil, workerName))
 	return errors.Trace(l.unitHolder.init(ctx))
 }
 

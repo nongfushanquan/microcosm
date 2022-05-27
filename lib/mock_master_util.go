@@ -12,6 +12,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/hanfei1991/microcosm/client"
+	"github.com/hanfei1991/microcosm/lib/metadata"
 	libModel "github.com/hanfei1991/microcosm/lib/model"
 	"github.com/hanfei1991/microcosm/lib/statusutil"
 	"github.com/hanfei1991/microcosm/model"
@@ -20,19 +21,26 @@ import (
 	dcontext "github.com/hanfei1991/microcosm/pkg/context"
 	"github.com/hanfei1991/microcosm/pkg/deps"
 	"github.com/hanfei1991/microcosm/pkg/errors"
+	resourcemeta "github.com/hanfei1991/microcosm/pkg/externalresource/resourcemeta/model"
 	mockkv "github.com/hanfei1991/microcosm/pkg/meta/kvclient/mock"
+	pkgOrm "github.com/hanfei1991/microcosm/pkg/orm"
 	"github.com/hanfei1991/microcosm/pkg/p2p"
 	"github.com/hanfei1991/microcosm/pkg/uuid"
 )
 
-func MockBaseMaster(id MasterID, masterImpl MasterImpl) *DefaultBaseMaster {
+// MockBaseMaster returns a mock DefaultBaseMaster
+func MockBaseMaster(id libModel.MasterID, masterImpl MasterImpl) *DefaultBaseMaster {
 	ctx := dcontext.Background()
 	dp := deps.NewDeps()
-	err := dp.Provide(func() masterParamListForTest {
+	cli, err := pkgOrm.NewMockClient()
+	if err != nil {
+		panic(err)
+	}
+	err = dp.Provide(func() masterParamListForTest {
 		return masterParamListForTest{
 			MessageHandlerManager: p2p.NewMockMessageHandlerManager(),
 			MessageSender:         p2p.NewMockMessageSender(),
-			MetaKVClient:          mockkv.NewMetaMock(),
+			FrameMetaClient:       cli,
 			UserRawKVClient:       mockkv.NewMetaMock(),
 			ExecutorClientManager: client.NewClientManager(),
 			ServerMasterClient:    &client.MockServerMasterClient{},
@@ -52,35 +60,31 @@ func MockBaseMaster(id MasterID, masterImpl MasterImpl) *DefaultBaseMaster {
 	return ret.(*DefaultBaseMaster)
 }
 
+// MockBaseMasterCreateWorker mocks to create worker in base master
 func MockBaseMasterCreateWorker(
 	t *testing.T,
 	master *DefaultBaseMaster,
-	workerType WorkerType,
+	workerType libModel.WorkerType,
 	config WorkerConfig,
 	cost model.RescUnit,
-	masterID MasterID,
-	workerID WorkerID,
+	masterID libModel.MasterID,
+	workerID libModel.WorkerID,
 	executorID model.ExecutorID,
+	resources []resourcemeta.ResourceID,
 ) {
 	master.uuidGen = uuid.NewMock()
-
-	expectedSchedulerReq := &pb.TaskSchedulerRequest{Tasks: []*pb.ScheduleTask{{
-		Task: &pb.TaskRequest{
-			Id: 0,
-		},
-		Cost: int64(cost),
-	}}}
+	expectedSchedulerReq := &pb.ScheduleTaskRequest{
+		TaskId:               workerID,
+		Cost:                 int64(cost),
+		ResourceRequirements: resources,
+	}
 	master.serverMasterClient.(*client.MockServerMasterClient).On(
 		"ScheduleTask",
 		mock.Anything,
 		expectedSchedulerReq,
 		mock.Anything).Return(
-		&pb.TaskSchedulerResponse{
-			Schedule: map[int64]*pb.ScheduleResult{
-				0: {
-					ExecutorId: string(executorID),
-				},
-			},
+		&pb.ScheduleTaskResponse{
+			ExecutorId: string(executorID),
 		}, nil)
 
 	mockExecutorClient := &client.MockExecutorClient{}
@@ -89,62 +93,61 @@ func MockBaseMasterCreateWorker(
 	configBytes, err := json.Marshal(config)
 	require.NoError(t, err)
 
-	mockExecutorClient.On("Send",
+	mockExecutorClient.On("DispatchTask",
 		mock.Anything,
-		&client.ExecutorRequest{
-			Cmd: client.CmdDispatchTask,
-			Req: &pb.DispatchTaskRequest{
-				TaskTypeId: int64(workerType),
-				TaskConfig: configBytes,
-				MasterId:   masterID,
-				WorkerId:   workerID,
-			},
-		}).Return(&client.ExecutorResponse{Resp: &pb.DispatchTaskResponse{
-		ErrorCode: 1,
-	}}, nil)
+		&client.DispatchTaskArgs{
+			WorkerID:     workerID,
+			MasterID:     masterID,
+			WorkerType:   int64(workerType),
+			WorkerConfig: configBytes,
+		}, mock.Anything, mock.Anything).
+		Return(nil).
+		Run(func(args mock.Arguments) {
+			startWorker := args.Get(2).(client.StartWorkerCallback)
+			startWorker()
+		})
 
 	master.uuidGen.(*uuid.MockGenerator).Push(workerID)
 }
 
+// MockBaseMasterCreateWorkerMetScheduleTaskError mocks ScheduleTask meets error
 func MockBaseMasterCreateWorkerMetScheduleTaskError(
 	t *testing.T,
 	master *DefaultBaseMaster,
-	workerType WorkerType,
+	workerType libModel.WorkerType,
 	config WorkerConfig,
 	cost model.RescUnit,
-	masterID MasterID,
-	workerID WorkerID,
+	masterID libModel.MasterID,
+	workerID libModel.WorkerID,
 	executorID model.ExecutorID,
 ) {
 	master.uuidGen = uuid.NewMock()
-
-	expectedSchedulerReq := &pb.TaskSchedulerRequest{Tasks: []*pb.ScheduleTask{{
-		Task: &pb.TaskRequest{
-			Id: 0,
-		},
-		Cost: int64(cost),
-	}}}
+	expectedSchedulerReq := &pb.ScheduleTaskRequest{
+		TaskId: workerID,
+		Cost:   int64(cost),
+	}
 	master.serverMasterClient.(*client.MockServerMasterClient).On(
 		"ScheduleTask",
 		mock.Anything,
 		expectedSchedulerReq,
 		mock.Anything).Return(
-		&pb.TaskSchedulerResponse{}, errors.ErrClusterResourceNotEnough.FastGenByArgs())
+		&pb.ScheduleTaskResponse{}, errors.ErrClusterResourceNotEnough.FastGenByArgs())
 	master.uuidGen.(*uuid.MockGenerator).Push(workerID)
 }
 
+// MockBaseMasterWorkerHeartbeat sends HeartbeatPingMessage with mock message handler
 func MockBaseMasterWorkerHeartbeat(
 	t *testing.T,
 	master *DefaultBaseMaster,
-	masterID MasterID,
-	workerID WorkerID,
+	masterID libModel.MasterID,
+	workerID libModel.WorkerID,
 	executorID p2p.NodeID,
 ) {
 	err := master.messageHandlerManager.(*p2p.MockMessageHandlerManager).InvokeHandler(
 		t,
-		HeartbeatPingTopic(masterID),
+		libModel.HeartbeatPingTopic(masterID),
 		executorID,
-		&HeartbeatPingMessage{
+		&libModel.HeartbeatPingMessage{
 			SendTime:     clock.MonoNow(),
 			FromWorkerID: workerID,
 			Epoch:        master.currentEpoch.Load(),
@@ -153,17 +156,19 @@ func MockBaseMasterWorkerHeartbeat(
 	require.NoError(t, err)
 }
 
+// MockBaseMasterWorkerUpdateStatus mocks to store status in metastore and sends
+// WorkerStatusMessage.
 func MockBaseMasterWorkerUpdateStatus(
 	ctx context.Context,
 	t *testing.T,
 	master *DefaultBaseMaster,
-	masterID MasterID,
-	workerID WorkerID,
+	masterID libModel.MasterID,
+	workerID libModel.WorkerID,
 	executorID p2p.NodeID,
 	status *libModel.WorkerStatus,
 ) {
-	workerMetaClient := NewWorkerMetadataClient(masterID, master.metaKVClient)
-	err := workerMetaClient.Store(ctx, workerID, status)
+	workerMetaClient := metadata.NewWorkerMetadataClient(masterID, master.frameMetaClient)
+	err := workerMetaClient.Store(ctx, status)
 	require.NoError(t, err)
 
 	err = master.messageHandlerManager.(*p2p.MockMessageHandlerManager).InvokeHandler(

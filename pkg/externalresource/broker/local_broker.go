@@ -9,22 +9,21 @@ import (
 	"testing"
 
 	"github.com/gogo/status"
-	"github.com/hanfei1991/microcosm/pb"
-	"github.com/pingcap/errors"
 	"github.com/pingcap/tiflow/dm/pkg/log"
 	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 	"google.golang.org/grpc/codes"
 
+	"github.com/hanfei1991/microcosm/pb"
 	"github.com/hanfei1991/microcosm/pkg/externalresource/manager"
-	"github.com/hanfei1991/microcosm/pkg/externalresource/resourcemeta"
+	resourcemeta "github.com/hanfei1991/microcosm/pkg/externalresource/resourcemeta/model"
 	"github.com/hanfei1991/microcosm/pkg/externalresource/storagecfg"
 )
 
 // LocalBroker is a broker unit-testing other components
 // that depend on a Broker.
 type LocalBroker struct {
-	*Impl
+	*DefaultBroker
 
 	clientMu sync.Mutex
 	client   *manager.MockClient
@@ -33,19 +32,21 @@ type LocalBroker struct {
 	persistedList []resourcemeta.ResourceID
 }
 
+// NewBrokerForTesting creates a LocalBroker instance for testing only
 func NewBrokerForTesting(executorID resourcemeta.ExecutorID) *LocalBroker {
 	dir, err := ioutil.TempDir("/tmp", "*-localfiles")
 	if err != nil {
 		log.L().Panic("failed to make tempdir")
 	}
 	cfg := &storagecfg.Config{Local: &storagecfg.LocalFileConfig{BaseDir: dir}}
-	client := manager.NewMockClient()
+	client := manager.NewWrappedMockClient()
 	return &LocalBroker{
-		Impl:   NewBroker(cfg, executorID, client),
-		client: client,
+		DefaultBroker: NewBroker(cfg, executorID, client),
+		client:        client.GetLeaderClient().(*manager.MockClient),
 	}
 }
 
+// OpenStorage wraps broker.OpenStorage
 func (b *LocalBroker) OpenStorage(
 	ctx context.Context,
 	workerID resourcemeta.WorkerID,
@@ -55,19 +56,14 @@ func (b *LocalBroker) OpenStorage(
 	b.clientMu.Lock()
 	defer b.clientMu.Unlock()
 
-	st, err := status.New(codes.Internal, "resource manager error").WithDetails(&pb.ResourceError{
-		ErrorCode: pb.ResourceErrorCode_ResourceNotFound,
-	})
-	if err != nil {
-		return nil, errors.Trace(err)
-	}
+	st := status.New(codes.NotFound, "resource manager error")
 
 	b.client.On("QueryResource", mock.Anything, &pb.QueryResourceRequest{ResourceId: resourcePath}, mock.Anything).
 		Return((*pb.QueryResourceResponse)(nil), st.Err())
 	defer func() {
 		b.client.ExpectedCalls = nil
 	}()
-	h, err := b.Impl.OpenStorage(ctx, workerID, jobID, resourcePath)
+	h, err := b.DefaultBroker.OpenStorage(ctx, workerID, jobID, resourcePath)
 	if err != nil {
 		return nil, err
 	}
@@ -75,6 +71,7 @@ func (b *LocalBroker) OpenStorage(
 	return &brExternalStorageHandleForTesting{parent: b, Handle: h}, nil
 }
 
+// AssertPersisted checks resource is in persisted list
 func (b *LocalBroker) AssertPersisted(t *testing.T, id resourcemeta.ResourceID) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
@@ -89,6 +86,7 @@ func (b *LocalBroker) appendPersistRecord(id resourcemeta.ResourceID) {
 	b.persistedList = append(b.persistedList, id)
 }
 
+// AssertFileExists checks lock file exists
 func (b *LocalBroker) AssertFileExists(
 	t *testing.T,
 	workerID resourcemeta.WorkerID,

@@ -2,6 +2,7 @@ package etcdkv
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -11,6 +12,7 @@ import (
 	"github.com/hanfei1991/microcosm/pkg/meta/metaclient"
 )
 
+// Defines fake key/value pair which is used in aliveness check or epoch generation
 const (
 	FakeKey   = "/fake-key"
 	FakeValue = "/fake-value"
@@ -34,6 +36,7 @@ type etcdImpl struct {
 	closeMu sync.Mutex
 }
 
+// NewEtcdImpl creates a new etcdImpl instance
 func NewEtcdImpl(config *metaclient.StoreConfigParams) (*etcdImpl, error) {
 	cli, err := clientv3.New(clientv3.Config{
 		Endpoints: config.Endpoints,
@@ -162,7 +165,10 @@ func (c *etcdImpl) Do(ctx context.Context, op metaclient.Op) (metaclient.OpRespo
 		txnRsp := makeTxnResp(rsp)
 		return txnRsp.OpResponse(), nil
 	default:
-		panic("Unknown op")
+	}
+
+	return metaclient.OpResponse{}, &etcdError{
+		displayed: cerrors.ErrMetaOptionInvalid.Wrap(fmt.Errorf("unrecognized op type:%d", op.T)),
 	}
 }
 

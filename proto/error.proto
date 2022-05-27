@@ -23,6 +23,13 @@ enum ErrorCode {
     // MasterNotReady means the master is staring up, and not ready to serve
     MasterNotReady = 9;
     UnKnownJob = 10;
+    // metastore not exists
+    MetaStoreNotExists = 11;
+    // metastore serialize fail
+    MetaStoreSerializeFail = 12;
+    // job status is not expected for the operation.
+    UnexpectedJobStatus = 13;
+    
     UnknownError = 10001;
 }
 

@@ -8,12 +8,13 @@ import (
 
 	"github.com/hanfei1991/microcosm/lib"
 	"github.com/hanfei1991/microcosm/lib/fake"
+	libModel "github.com/hanfei1991/microcosm/lib/model"
 	dcontext "github.com/hanfei1991/microcosm/pkg/context"
 	"github.com/hanfei1991/microcosm/pkg/deps"
 	"github.com/hanfei1991/microcosm/pkg/externalresource/broker"
 	extkv "github.com/hanfei1991/microcosm/pkg/meta/extension"
 	"github.com/hanfei1991/microcosm/pkg/meta/kvclient/mock"
-	"github.com/hanfei1991/microcosm/pkg/meta/metaclient"
+	pkgOrm "github.com/hanfei1991/microcosm/pkg/orm"
 	"github.com/hanfei1991/microcosm/pkg/p2p"
 )
 
@@ -22,18 +23,20 @@ type paramList struct {
 
 	MessageHandlerManager p2p.MessageHandlerManager
 	MessageSender         p2p.MessageSender
-	MetaKVClient          metaclient.KVClient
+	FrameMetaClient       pkgOrm.Client
 	UserRawKVClient       extkv.KVClientEx
 	ResourceBroker        broker.Broker
 }
 
 func makeCtxWithMockDeps(t *testing.T) *dcontext.Context {
 	dp := deps.NewDeps()
-	err := dp.Provide(func() paramList {
+	cli, err := pkgOrm.NewMockClient()
+	require.NoError(t, err)
+	err = dp.Provide(func() paramList {
 		return paramList{
 			MessageHandlerManager: p2p.NewMockMessageHandlerManager(),
 			MessageSender:         p2p.NewMockMessageSender(),
-			MetaKVClient:          mock.NewMetaMock(),
+			FrameMetaClient:       cli,
 			UserRawKVClient:       mock.NewMetaMock(),
 			ResourceBroker:        broker.NewBrokerForTesting("executor-1"),
 		}
@@ -43,7 +46,7 @@ func makeCtxWithMockDeps(t *testing.T) *dcontext.Context {
 }
 
 func TestNewSimpleWorkerFactory(t *testing.T) {
-	dummyConstructor := func(ctx *dcontext.Context, id lib.WorkerID, masterID lib.MasterID, config WorkerConfig) lib.WorkerImpl {
+	dummyConstructor := func(ctx *dcontext.Context, id libModel.WorkerID, masterID libModel.MasterID, config WorkerConfig) lib.WorkerImpl {
 		return fake.NewDummyWorker(ctx, id, masterID, config)
 	}
 	fac := NewSimpleWorkerFactory(dummyConstructor, &fake.WorkerConfig{})

@@ -9,43 +9,50 @@ import (
 	"go.uber.org/zap"
 
 	"github.com/hanfei1991/microcosm/lib"
+	libModel "github.com/hanfei1991/microcosm/lib/model"
 	dcontext "github.com/hanfei1991/microcosm/pkg/context"
 	derror "github.com/hanfei1991/microcosm/pkg/errors"
 )
 
+// WorkerConfig alias to lib.WorkerConfig
 type WorkerConfig = lib.WorkerConfig
 
+// Registry defines an interface to worker as worker register bridge. Business
+// can register any worker or job master implementation into a registry
 type Registry interface {
-	MustRegisterWorkerType(tp lib.WorkerType, factory WorkerFactory)
-	RegisterWorkerType(tp lib.WorkerType, factory WorkerFactory) (ok bool)
+	MustRegisterWorkerType(tp libModel.WorkerType, factory WorkerFactory)
+	RegisterWorkerType(tp libModel.WorkerType, factory WorkerFactory) (ok bool)
 	CreateWorker(
 		ctx *dcontext.Context,
 		tp lib.WorkerType,
-		workerID lib.WorkerID,
-		masterID lib.MasterID,
+		workerID libModel.WorkerID,
+		masterID libModel.MasterID,
 		config []byte,
 	) (lib.Worker, error)
 }
 
 type registryImpl struct {
 	mu         sync.RWMutex
-	factoryMap map[lib.WorkerType]WorkerFactory
+	factoryMap map[libModel.WorkerType]WorkerFactory
 }
 
+// NewRegistry creates a new registryImpl instance
 func NewRegistry() Registry {
 	return &registryImpl{
-		factoryMap: make(map[lib.WorkerType]WorkerFactory),
+		factoryMap: make(map[libModel.WorkerType]WorkerFactory),
 	}
 }
 
-func (r *registryImpl) MustRegisterWorkerType(tp lib.WorkerType, factory WorkerFactory) {
+// MustRegisterWorkerType implements Registry.MustRegisterWorkerType
+func (r *registryImpl) MustRegisterWorkerType(tp libModel.WorkerType, factory WorkerFactory) {
 	if ok := r.RegisterWorkerType(tp, factory); !ok {
 		log.L().Panic("duplicate worker type", zap.Int64("worker-type", int64(tp)))
 	}
 	log.L().Info("register worker", zap.Int64("worker-type", int64(tp)))
 }
 
-func (r *registryImpl) RegisterWorkerType(tp lib.WorkerType, factory WorkerFactory) (ok bool) {
+// RegisterWorkerType implements Registry.RegisterWorkerType
+func (r *registryImpl) RegisterWorkerType(tp libModel.WorkerType, factory WorkerFactory) (ok bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -56,11 +63,12 @@ func (r *registryImpl) RegisterWorkerType(tp lib.WorkerType, factory WorkerFacto
 	return true
 }
 
+// CreateWorker implements Registry.CreateWorker
 func (r *registryImpl) CreateWorker(
 	ctx *dcontext.Context,
 	tp lib.WorkerType,
-	workerID lib.WorkerID,
-	masterID lib.MasterID,
+	workerID libModel.WorkerID,
+	masterID libModel.MasterID,
 	configBytes []byte,
 ) (lib.Worker, error) {
 	factory, ok := r.getWorkerFactory(tp)
@@ -84,10 +92,12 @@ func (r *registryImpl) CreateWorker(
 			impl,
 			workerID,
 			masterID,
+			// tp,
 		)
 		setImplMember(impl, nameOfBaseWorker, base)
 		return base, nil
 	}
+	// TODO: should jobmaster record worker status
 	if implHasMember(impl, nameOfBaseJobMaster) {
 		base := lib.NewBaseJobMaster(
 			ctx,
@@ -104,7 +114,7 @@ func (r *registryImpl) CreateWorker(
 	return nil, nil
 }
 
-func (r *registryImpl) getWorkerFactory(tp lib.WorkerType) (factory WorkerFactory, ok bool) {
+func (r *registryImpl) getWorkerFactory(tp libModel.WorkerType) (factory WorkerFactory, ok bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
